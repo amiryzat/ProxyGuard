@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# PyCharm
+.idea/
+
+# macOS
+.DS_Store
+
+# Logs
+logs/*.csv
+logs/*.log
+
+# Environment variables
+.env
+
+# Obsidian local workspace only
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+
+# Runtime snapshots
+logs/snapshots/

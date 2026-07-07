@@ -1,0 +1,10 @@
+opencv-python
+face_recognition
+mediapipe
+numpy
+pandas
+SpeechRecognition
+PyAudio
+
+# Optional, planned for a later lecturer-facing dashboard
+# Flask

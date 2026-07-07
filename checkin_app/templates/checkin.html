@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ProxyGuard Check-in</title>
+    <style>
+        /* Minimal styling for readability only, matching the other apps. */
+        body {
+            font-family: Arial, Helvetica, sans-serif;
+            margin: 2rem;
+            color: #222;
+        }
+        h1 {
+            font-size: 1.5rem;
+        }
+        .session-meta {
+            margin: 0 0 1rem;
+        }
+        .session-meta .id {
+            font-family: "Courier New", monospace;
+            background: #f2f2f2;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            padding: 0.35rem 0.6rem;
+            display: inline-block;
+            margin-top: 0.3rem;
+        }
+        #status {
+            font-size: 1.1rem;
+            font-weight: bold;
+            margin: 0.5rem 0 1rem;
+            min-height: 1.4em;
+        }
+        .video-wrap img {
+            max-width: 100%;
+            width: 720px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            background: #000;
+        }
+        button {
+            padding: 8px 16px;
+            font-size: 1rem;
+            cursor: pointer;
+            margin-top: 1rem;
+        }
+        button:disabled {
+            cursor: default;
+            opacity: 0.5;
+        }
+        .note {
+            color: #666;
+        }
+        a {
+            color: #06c;
+        }
+    </style>
+</head>
+<body>
+    <h1>ProxyGuard Check-in</h1>
+
+    <!-- Class / week / session_id confirmed from the Phase 2a setup step. -->
+    <div class="session-meta">
+        <div><strong>Class:</strong> {{ subject }} &nbsp;|&nbsp; <strong>Week:</strong> {{ week_number }}</div>
+        <div><span class="id">{{ session_id }}</span></div>
+    </div>
+
+    <div id="status">Look at the camera and follow the on-screen instruction.</div>
+
+    <!-- Frames are captured and processed server-side; the browser only
+         displays them. All recognition/liveness overlays (head-turn
+         instruction, liveness success, confirmed/failed) are drawn onto the
+         streamed frames by the shared CheckinSession, so the same messages the
+         desktop app shows appear here too. -->
+    <div class="video-wrap">
+        <img src="{{ url_for('video_feed') }}" alt="Live check-in camera">
+    </div>
+
+    <button id="newCheck" disabled>New check-in (next student)</button>
+    <p class="note"><a href="{{ url_for('setup') }}">End session / set up a different class</a></p>
+
+    <script>
+        const statusEl = document.getElementById('status');
+        const newBtn = document.getElementById('newCheck');
+
+        async function poll() {
+            try {
+                const r = await fetch('{{ url_for("status") }}', { cache: 'no-store' });
+                const s = await r.json();
+                if (s.message) statusEl.textContent = s.message;
+                // Enable "New check-in" only at a terminal outcome, mirroring
+                // the desktop's 'n'-only-when-terminal behavior.
+                newBtn.disabled = !s.can_reset;
+            } catch (e) {
+                /* keep the last shown status on a transient polling error */
+            }
+        }
+
+        newBtn.addEventListener('click', async () => {
+            newBtn.disabled = true;
+            await fetch('{{ url_for("reset") }}', { method: 'POST' });
+        });
+
+        setInterval(poll, 500);
+        poll();
+    </script>
+</body>
+</html>

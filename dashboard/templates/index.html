@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ProxyGuard Attendance</title>
+    <style>
+        /* Minimal styling for readability only -- no theming in Phase 1. */
+        body {
+            font-family: Arial, Helvetica, sans-serif;
+            margin: 2rem;
+            color: #222;
+        }
+        h1 {
+            font-size: 1.5rem;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin-top: 1rem;
+        }
+        th, td {
+            border: 1px solid #ccc;
+            padding: 8px 12px;
+            text-align: left;
+        }
+        th {
+            background: #f2f2f2;
+        }
+        tr:nth-child(even) td {
+            background: #fafafa;
+        }
+        /* Highlight rows that pattern_flagger.py flagged as suspicious
+           (repeated failures, duplicate attempts, unrecognized clusters).
+           Uses !important so it wins over the zebra-striping rule above. */
+        tr.flagged td {
+            background: #ffd6d6 !important;
+        }
+        .empty {
+            margin-top: 1rem;
+            color: #666;
+        }
+        .filter {
+            margin-top: 1rem;
+        }
+        .filter label {
+            margin-right: 0.5rem;
+        }
+        /* Simple stat boxes for the selected-session summary (Phase 4). */
+        .summary {
+            display: flex;
+            gap: 1rem;
+            margin-top: 1rem;
+            flex-wrap: wrap;
+        }
+        .stat-box {
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            padding: 0.75rem 1rem;
+            min-width: 6rem;
+            background: #f7f7f7;
+        }
+        .stat-value {
+            font-size: 1.5rem;
+            font-weight: bold;
+        }
+        .stat-label {
+            font-size: 0.85rem;
+            color: #555;
+        }
+        .stat-box.flagged-stat .stat-value {
+            color: #b00000;
+        }
+    </style>
+</head>
+<body>
+    <h1>ProxyGuard Attendance Log</h1>
+
+    {% if sessions %}
+    <form class="filter" method="get" action="/">
+        <label for="session">Session:</label>
+        <select id="session" name="session" onchange="this.form.submit()">
+            {% for session in sessions %}
+            <option value="{{ session }}" {% if session == selected_session %}selected{% endif %}>
+                {{ session }}
+            </option>
+            {% endfor %}
+        </select>
+        <noscript><button type="submit">Show</button></noscript>
+    </form>
+    {% endif %}
+
+    {% if summary %}
+    <div class="summary">
+        <div class="stat-box">
+            <div class="stat-value">{{ summary.total }}</div>
+            <div class="stat-label">Total attempts</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-value">{{ summary.successful }}</div>
+            <div class="stat-label">Successful</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-value">{{ summary.failed }}</div>
+            <div class="stat-label">Failed</div>
+        </div>
+        <div class="stat-box flagged-stat">
+            <div class="stat-value">{{ summary.flagged }}</div>
+            <div class="stat-label">Flagged</div>
+        </div>
+    </div>
+    {% endif %}
+
+    {% if rows %}
+    <table>
+        <thead>
+            <tr>
+                {% for header in headers %}
+                <th>{{ header }}</th>
+                {% endfor %}
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in rows %}
+            <tr {% if row.flagged %}class="flagged"{% endif %}>
+                {% for header in headers %}
+                <td>{{ row.cells[header] }}</td>
+                {% endfor %}
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="empty">No attendance records found.</p>
+    {% endif %}
+</body>
+</html>
