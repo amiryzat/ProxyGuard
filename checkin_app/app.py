@@ -101,7 +101,9 @@ def _start_station(session_id, subject, week_number):
             _station["cap"] = cap
         if _station["session"] is not None:         # release previous FaceMesh
             _station["session"].close()
-        _station["session"] = CheckinSession(session_id, encodings, names)
+        # restart_hint=None: the web page uses the "New check-in" button (and
+        # /reset), not a keyboard key, so no on-frame "Press 'n'..." hint.
+        _station["session"] = CheckinSession(session_id, encodings, names, restart_hint=None)
         _station["session_id"] = session_id
         _station["subject"] = subject
         _station["week"] = week_number

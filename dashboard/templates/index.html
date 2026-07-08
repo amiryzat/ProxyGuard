@@ -71,26 +71,83 @@
         .stat-box.flagged-stat .stat-value {
             color: #b00000;
         }
+        /* Inline verification-snapshot thumbnail in each attendance row. */
+        .snapshot-thumb {
+            height: 56px;
+            width: auto;
+            border: 1px solid #ccc;
+            border-radius: 3px;
+            display: block;
+        }
+        .no-snapshot {
+            color: #999;
+            font-size: 0.85rem;
+            font-style: italic;
+        }
+        /* Phase B: Present / Attempts tabs on the same page. */
+        .tabs {
+            margin-top: 1.5rem;
+            border-bottom: 1px solid #ccc;
+        }
+        .tab-button {
+            font: inherit;
+            font-size: 1rem;
+            padding: 0.5rem 1rem;
+            margin-right: 0.25rem;
+            border: 1px solid #ccc;
+            border-bottom: none;
+            border-radius: 4px 4px 0 0;
+            background: #f2f2f2;
+            color: #222;
+            cursor: pointer;
+            position: relative;
+            top: 1px;
+        }
+        .tab-button.active {
+            background: #fff;
+            font-weight: bold;
+            border-bottom: 1px solid #fff;
+        }
+        .tab-panel {
+            display: none;
+        }
+        .tab-panel.active {
+            display: block;
+        }
+        /* Phase C: reason filter inside the Attempts tab. */
+        .reason-filter {
+            margin-top: 1rem;
+        }
+        .reason-filter label {
+            margin-right: 0.5rem;
+        }
     </style>
 </head>
 <body>
     <h1>ProxyGuard Attendance Log</h1>
 
-    {% if sessions %}
-    <form class="filter" method="get" action="/">
-        <label for="session">Session:</label>
-        <select id="session" name="session" onchange="this.form.submit()">
-            {% for session in sessions %}
-            <option value="{{ session }}" {% if session == selected_session %}selected{% endif %}>
-                {{ session }}
-            </option>
-            {% endfor %}
-        </select>
-        <noscript><button type="submit">Show</button></noscript>
-    </form>
-    {% endif %}
+    {# Phase C: one form wraps the session filter, the tab state, and the
+       Attempts-only reason filter, so changing either dropdown submits both
+       values together (reason filter applies on top of the session filter,
+       never instead of it) and the currently open tab survives the reload. #}
+    <form method="get" action="/">
+        <input type="hidden" name="tab" id="active-tab-field" value="{{ active_tab }}">
 
-    {% if summary %}
+        {% if sessions %}
+        <div class="filter">
+            <label for="session">Session:</label>
+            <select id="session" name="session" onchange="this.form.submit()">
+                {% for session in sessions %}
+                <option value="{{ session }}" {% if session == selected_session %}selected{% endif %}>
+                    {{ session }}
+                </option>
+                {% endfor %}
+            </select>
+            <noscript><button type="submit">Apply filters</button></noscript>
+        </div>
+        {% endif %}
+
+        {% macro render_summary(summary) %}
     <div class="summary">
         <div class="stat-box">
             <div class="stat-value">{{ summary.total }}</div>
@@ -109,8 +166,9 @@
             <div class="stat-label">Flagged</div>
         </div>
     </div>
-    {% endif %}
+    {% endmacro %}
 
+    {% macro render_table(rows) %}
     {% if rows %}
     <table>
         <thead>
@@ -118,6 +176,7 @@
                 {% for header in headers %}
                 <th>{{ header }}</th>
                 {% endfor %}
+                <th>snapshot</th>
             </tr>
         </thead>
         <tbody>
@@ -126,6 +185,15 @@
                 {% for header in headers %}
                 <td>{{ row.cells[header] }}</td>
                 {% endfor %}
+                <td>
+                    {% if row.snapshot %}
+                    <a href="{{ url_for('snapshot', filename=row.snapshot) }}" target="_blank" title="Open full snapshot">
+                        <img class="snapshot-thumb" src="{{ url_for('snapshot', filename=row.snapshot) }}" alt="verification snapshot">
+                    </a>
+                    {% else %}
+                    <span class="no-snapshot">no snapshot</span>
+                    {% endif %}
+                </td>
             </tr>
             {% endfor %}
         </tbody>
@@ -133,5 +201,52 @@
     {% else %}
     <p class="empty">No attendance records found.</p>
     {% endif %}
+    {% endmacro %}
+
+        <div class="tabs">
+            <button type="button" class="tab-button {% if active_tab == 'present' %}active{% endif %}" id="tab-btn-present" onclick="showTab('present')">Present</button>
+            <button type="button" class="tab-button {% if active_tab == 'attempts' %}active{% endif %}" id="tab-btn-attempts" onclick="showTab('attempts')">Attempts</button>
+        </div>
+
+        <div class="tab-panel {% if active_tab == 'present' %}active{% endif %}" id="tab-panel-present">
+            {{ render_summary(summary_present) }}
+            {{ render_table(present_rows) }}
+        </div>
+
+        <div class="tab-panel {% if active_tab == 'attempts' %}active{% endif %}" id="tab-panel-attempts">
+            <div class="reason-filter">
+                <label for="reason">Reason:</label>
+                <select id="reason" name="reason" onchange="this.form.submit()">
+                    <option value="all" {% if selected_reason == 'all' %}selected{% endif %}>All reasons</option>
+                    {% for reason in reasons %}
+                    <option value="{{ reason }}" {% if reason == selected_reason %}selected{% endif %}>
+                        {{ reason }}
+                    </option>
+                    {% endfor %}
+                </select>
+                <noscript><button type="submit">Apply filters</button></noscript>
+            </div>
+            {{ render_summary(summary_attempts) }}
+            {{ render_table(attempt_rows) }}
+        </div>
+    </form>
+
+    <script>
+        // Simple client-side tab switch -- no page reload, no separate routes.
+        // The session/reason dropdowns still reload the page (they're real GET
+        // filters); this only toggles which of the two already-rendered
+        // panels is visible, and keeps the hidden "tab" field in sync so that
+        // if a dropdown is then changed, the resulting reload reopens the same
+        // tab instead of always falling back to Present.
+        function showTab(name) {
+            var panels = { present: 'tab-panel-present', attempts: 'tab-panel-attempts' };
+            var buttons = { present: 'tab-btn-present', attempts: 'tab-btn-attempts' };
+            Object.keys(panels).forEach(function (key) {
+                document.getElementById(panels[key]).classList.toggle('active', key === name);
+                document.getElementById(buttons[key]).classList.toggle('active', key === name);
+            });
+            document.getElementById('active-tab-field').value = name;
+        }
+    </script>
 </body>
 </html>

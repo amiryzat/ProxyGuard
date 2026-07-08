@@ -45,6 +45,45 @@ MULTI_FACE_MESSAGE_LINES = [
     "please ensure you are alone during check-in",
 ]
 
+# Identity-liveness continuity guard (anti-proxy face swap). A recognized
+# identity must stay bound to the SAME physical face for the rest of the
+# active challenge -- otherwise a proxy could get recognized once, then swap
+# in an unregistered face (or a photo/phone screen) and still pass the
+# challenge under the first identity. See CheckinSession._update_identity_continuity.
+#
+# Tolerated consecutive recognition checks (every 3rd raw frame) where the
+# single detected face doesn't match the already-active identity/location,
+# before the identity is cleared and the challenge restarts. Mirrors the
+# existing single-bad-frame anti-flicker slack (Bug 1), but bounded so a
+# swapped-in face can't ride on a stale identity indefinitely.
+IDENTITY_MISMATCH_TOLERANCE = 2
+
+# Max allowed face-center shift between recognition checks, as a fraction of
+# frame width, before two face boxes are treated as different physical faces.
+# Deliberately simple (center-distance, not IoU/real tracking) -- this is an
+# academic prototype, not production biometric tracking.
+FACE_JUMP_MAX_FRACTION = 0.35
+
+CONTINUITY_WARNING_SECONDS = 2
+CONTINUITY_BROKEN_MESSAGE = "Face changed or lost, please keep the same face in frame"
+
+
+def _face_box_close(box_a, box_b, frame_width, max_fraction=FACE_JUMP_MAX_FRACTION):
+    """
+    Conservative face-continuity check: are two (top, right, bottom, left)
+    face boxes close enough to be considered the same physical face across
+    consecutive recognition checks? Compares box centers, normalized by frame
+    width so the threshold scales with resolution.
+    """
+    if box_a is None or box_b is None:
+        return False
+    top_a, right_a, bottom_a, left_a = box_a
+    top_b, right_b, bottom_b, left_b = box_b
+    center_a = ((left_a + right_a) / 2.0, (top_a + bottom_a) / 2.0)
+    center_b = ((left_b + right_b) / 2.0, (top_b + bottom_b) / 2.0)
+    distance = ((center_a[0] - center_b[0]) ** 2 + (center_a[1] - center_b[1]) ** 2) ** 0.5
+    return distance <= max_fraction * frame_width
+
 # Snapshots of every terminal check-in outcome are written here as a manual
 # verification safety net for lecturers. Resolved relative to this file (like
 # the other modules) so it works regardless of the working directory.
@@ -112,10 +151,16 @@ class CheckinSession:
         session.close()
     """
 
-    def __init__(self, session_id, known_encodings, known_names):
+    def __init__(self, session_id, known_encodings, known_names,
+                 restart_hint="Press 'n' to run a new check"):
         self.session_id = session_id
         self.known_encodings = known_encodings
         self.known_names = known_names
+        # On-frame hint shown at a terminal outcome telling the operator how to
+        # start the next check. Defaults to the desktop's 'n' key; the web app
+        # (checkin_app) passes None because it uses the "New check-in" button
+        # instead, so drawing "Press 'n'..." there would be misleading.
+        self.restart_hint = restart_hint
 
         # One FaceMesh per session (was a `with` block wrapping the old loop).
         # close() releases it. Same parameters as before.
@@ -159,6 +204,16 @@ class CheckinSession:
         self.check_locked = False
         self.locked_status = None
 
+        # Identity-liveness continuity guard state (see
+        # _update_identity_continuity). active_face_box is the face location
+        # last confirmed to belong to identified_name; identity_mismatch_streak
+        # counts consecutive recognition checks where the current single face
+        # didn't match it; continuity_warning_until is a short on-screen
+        # warning window shown right after continuity breaks.
+        self.active_face_box = None
+        self.identity_mismatch_streak = 0
+        self.continuity_warning_until = None
+
         # flow_phase drives what's on screen after the head-movement/blink
         # challenge locks in: liveness_success -> confirmed, or
         # liveness_success -> not_recognized, or liveness_failed. confirmed /
@@ -185,6 +240,65 @@ class CheckinSession:
 
     def close(self):
         self.face_mesh.close()
+
+    def _update_identity_continuity(self, names, face_locations, frame_width):
+        """
+        Anti-proxy-swap guard, run pre-lock on every recognition check (every
+        3rd raw frame). Recognizing a student once is not enough to bind their
+        identity to the whole attempt -- a later frame must still show the
+        SAME confidently recognized face for identified_name/last_known_name
+        to keep counting, or a swapped-in face (a phone, another person, an
+        unregistered face) could ride on the first identity for the rest of
+        the challenge. See docs/bugs.md.
+
+        - Exactly 1 face, matching name, matching (close) location -> identity
+          confirmed continuous this check; reset the mismatch streak and track
+          the face's new position.
+        - Anything else (0 faces, >1 already handled by the caller and
+          skipped here, a different name, or too large a location jump) counts
+          as a mismatch. A small number of consecutive mismatches is tolerated
+          (the same single-bad-frame slack as the original anti-flicker fix),
+          but exceeding it clears the identity and restarts the challenge, so
+          it must be re-earned by a continuously present, matching face.
+        """
+        if len(face_locations) > 1:
+            # Multi-face frames are handled by the separate pause in
+            # process_frame (Decision 10) -- don't touch identity here.
+            return
+
+        if self.identified_name is None:
+            # No identity locked yet this attempt: any confident single-face
+            # match starts tracking it (same as the original behavior).
+            if len(face_locations) == 1 and names[0] != "Unknown":
+                self.identified_name = names[0]
+                self.last_known_name = names[0]
+                self.active_face_box = face_locations[0]
+                self.identity_mismatch_streak = 0
+            return
+
+        continuous = (
+            len(face_locations) == 1
+            and names[0] == self.identified_name
+            and _face_box_close(self.active_face_box, face_locations[0], frame_width)
+        )
+
+        if continuous:
+            self.identity_mismatch_streak = 0
+            self.last_known_name = names[0]
+            self.active_face_box = face_locations[0]
+            return
+
+        self.identity_mismatch_streak += 1
+        if self.identity_mismatch_streak > IDENTITY_MISMATCH_TOLERANCE:
+            # Continuity broken -- clear the identity and restart the
+            # challenge (fresh direction + fresh timer) rather than let a
+            # swapped-in face finish the challenge under the old identity.
+            self.identified_name = None
+            self.last_known_name = None
+            self.active_face_box = None
+            self.identity_mismatch_streak = 0
+            self.challenge.start()
+            self.continuity_warning_until = time.time() + CONTINUITY_WARNING_SECONDS
 
     def process_frame(self, frame):
         """
@@ -224,31 +338,19 @@ class CheckinSession:
             self.last_names = names
             self.last_face_locations = scaled_locations
 
-            # Only adopt an identity from a frame with exactly one face. In a
-            # multi-face frame last_names[0] is just whichever face sorted first,
-            # which must not become the to-be-confirmed identity -- and the
-            # challenge can't lock while multiple faces are present anyway (see
-            # the single-person enforcement below).
-            if not self.check_locked and len(self.last_face_locations) == 1 \
-                    and self.last_names and self.last_names[0] != "Unknown":
-                self.identified_name = self.last_names[0]
-
-            # Protect the drawn box label the same way (see last_known_name in
-            # _start_attempt), and only from a single-face frame -- last_known_name
-            # is a single-identity guard and must never be set from one face out
-            # of several (that is exactly what made every box show the same name).
-            # Unlike identified_name this also updates in the locked phase: on a
-            # pass, the locked branch feeds confirmed_name through as the name so
-            # the label keeps showing it; on a fail, the locked branch feeds
-            # "Unknown", which is ignored here so the label holds the last
-            # confident identity instead of flipping to "Unknown".
-            if len(self.last_face_locations) == 1 \
-                    and self.last_names and self.last_names[0] != "Unknown":
-                self.last_known_name = self.last_names[0]
+            if not self.check_locked:
+                # Identity-liveness continuity guard (anti-proxy face swap):
+                # identified_name/last_known_name only keep counting for the
+                # SAME confidently recognized face, not just any non-"Unknown"
+                # name seen at any point this attempt. See
+                # _update_identity_continuity and docs/bugs.md.
+                self._update_identity_continuity(self.last_names, self.last_face_locations, frame_width)
+            # Once locked, last_known_name is deliberately left as-is (its
+            # anti-flicker/snapshot-naming role, see docs/bugs.md Bug 1/2) --
+            # only the pre-lock continuity guard above can change it.
 
         num_faces = len(self.last_face_locations)
         for (top, right, bottom, left), name in zip(self.last_face_locations, self.last_names):
-            cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)
             if not self.check_locked:
                 if num_faces > 1:
                     # Multiple faces: label each box with its OWN recognition
@@ -265,16 +367,26 @@ class CheckinSession:
                     # flash the label to "Unknown". Falls back to the raw name
                     # only before any confident match has been made this attempt.
                     display_name = self.last_known_name or name
-                cv2.putText(frame, display_name, (left, top - 10), cv2.FONT_HERSHEY_DUPLEX, 0.7, (0, 255, 0), 2)
-            # Once check_locked is true (liveness_success through the terminal
-            # states, which wait for a reset), draw NO name label -- only the
-            # tracking rectangle. locate_faces keeps the box following whoever
-            # is in frame, but that may no longer be the student who just
-            # checked in (they can step away and someone else sits down before
-            # 'n' / "New check-in" is pressed). last_known_name is deliberately
-            # left uncleared for its anti-flicker role and for the snapshot
-            # filename, so we gate the *display* on check_locked here rather
-            # than clearing the variable. See docs/bugs.md (Bug 3).
+            else:
+                # Once check_locked is true (liveness_success through the terminal
+                # states, which wait for a reset), draw NO name label -- only the
+                # tracking rectangle. locate_faces keeps the box following whoever
+                # is in frame, but that may no longer be the student who just
+                # checked in (they can step away and someone else sits down before
+                # 'n' / "New check-in" is pressed). last_known_name is deliberately
+                # left uncleared for its anti-flicker role and for the snapshot
+                # filename, so we gate the *display* on check_locked here rather
+                # than clearing the variable. See docs/bugs.md (Bug 3). The box
+                # color still reflects this box's tracked identity.
+                display_name = name
+
+            # Red box (and matching label) for an unrecognized face, green for a
+            # recognized one, so an "Unknown" stands out at a glance. BGR tuples.
+            box_color = (0, 0, 255) if (not display_name or display_name == "Unknown") else (0, 255, 0)
+
+            cv2.rectangle(frame, (left, top), (right, bottom), box_color, 2)
+            if not self.check_locked:
+                cv2.putText(frame, display_name, (left, top - 10), cv2.FONT_HERSHEY_DUPLEX, 0.7, box_color, 2)
 
         direction = "center"
         status = "waiting"
@@ -342,12 +454,30 @@ class CheckinSession:
                     wrong_x = (frame_width - wrong_size[0]) // 2
                     cv2.putText(frame, wrong_msg, (wrong_x, frame_height - 110), cv2.FONT_HERSHEY_DUPLEX, 0.7, (0, 165, 255), 2)
 
+                # Brief on-frame/status warning right after the continuity
+                # guard clears an identity (see _update_identity_continuity).
+                # Purely cosmetic -- the challenge was already reset the
+                # moment continuity broke; this just tells the operator why.
+                if self.continuity_warning_until and time.time() < self.continuity_warning_until:
+                    self.banner = CONTINUITY_BROKEN_MESSAGE
+                    warn_size = cv2.getTextSize(CONTINUITY_BROKEN_MESSAGE, cv2.FONT_HERSHEY_DUPLEX, 0.7, 2)[0]
+                    warn_x = (frame_width - warn_size[0]) // 2
+                    cv2.putText(frame, CONTINUITY_BROKEN_MESSAGE, (warn_x, frame_height - 140), cv2.FONT_HERSHEY_DUPLEX, 0.7, (0, 0, 255), 2)
+
                 if status == "passed":
                     self.check_locked = True
                     self.locked_status = "passed"
                     self.flow_phase = "liveness_success"
                     self.phase_start = time.time()
-                    if self.identified_name and self.identified_name != "Unknown":
+                    # Only confirm under an identity that is CURRENTLY
+                    # continuous (identity_mismatch_streak == 0), not just "was
+                    # set at some point this attempt". Without this, a pass
+                    # landing during the tolerance grace window right after a
+                    # face swap could still confirm the stale identity even
+                    # though the last recognition check already didn't match
+                    # it. See _update_identity_continuity / docs/bugs.md.
+                    if self.identified_name and self.identified_name != "Unknown" \
+                            and self.identity_mismatch_streak == 0:
                         self.confirmed_name = self.identified_name
                     else:
                         self.confirmed_name = None
@@ -403,6 +533,22 @@ class CheckinSession:
                 else:  # identity_mismatch (retained but currently unreachable)
                     log_result, log_reason = "failed", "identity mismatch"
 
+                # Log identity: confirmed_name on a pass, but confirmed_name is
+                # always None on a FAILED outcome (see the "passed"/"failed"
+                # branches above), even when the person was confidently
+                # recognized earlier in the same attempt -- e.g. a registered
+                # student who fails the liveness challenge. Falling back to
+                # last_known_name (the same bad-frame-protected identity used
+                # for the on-screen label and the snapshot filename below)
+                # recovers that identity for the CSV row instead of logging
+                # "Unknown". last_known_name is None only when no confident
+                # match was ever made this attempt, so a genuinely unrecognized
+                # face still logs "Unknown" -- confirmed_name and
+                # last_known_name are always set from the same identified_name
+                # at the same moment (see _start_attempt/process_frame), so
+                # this never changes what gets logged on a successful pass.
+                log_name = self.confirmed_name or self.last_known_name or "Unknown"
+
                 # Use the reason actually written to the CSV, not log_reason.
                 # log_attendance downgrades a duplicate "success"/"confirmed" to
                 # "failed"/"duplicate check-in this session"; if we named the
@@ -411,7 +557,7 @@ class CheckinSession:
                 # duplicate failure. Naming from the returned reason keeps the
                 # snapshot filename consistent with the CSV row for that attempt.
                 _, written_reason = log_attendance(
-                    self.confirmed_name or "Unknown", log_result, log_reason, self.session_id
+                    log_name, log_result, log_reason, self.session_id
                 )
 
                 # Save a snapshot for every terminal outcome -- successes
@@ -420,18 +566,11 @@ class CheckinSession:
                 # to the camera; the saved image lets a lecturer verify the
                 # actual face after the fact. Uses the pre-overlay clean_frame.
                 os.makedirs(SNAPSHOT_DIR, exist_ok=True)
-                # Name the snapshot with last_known_name (the same bad-frame
-                # protected identity used for the on-screen box label), not
-                # confirmed_name. confirmed_name is None on any failed outcome,
-                # so a registered student who was recognized throughout a
-                # *failed* liveness attempt would otherwise be saved as
-                # "..._unknown_liveness_timeout_...", contradicting the real
-                # name shown on screen the whole time. last_known_name holds the
-                # last confidently recognized identity regardless of pass/fail,
-                # and is None only if no confident match was ever made this
-                # attempt -- in which case we still fall back to "unknown". (The
-                # attendance log itself is left keyed on confirmed_name; only
-                # the snapshot filename changes here.)
+                # Name the snapshot with last_known_name, the same
+                # bad-frame-protected identity as log_name above (log_name is
+                # this same value whenever confirmed_name is None), so the
+                # snapshot filename and the just-written CSV row agree on the
+                # identity for this attempt.
                 snapshot_path = os.path.join(
                     SNAPSHOT_DIR,
                     build_snapshot_filename(self.session_id, self.last_known_name or "unknown", written_reason),
@@ -445,11 +584,10 @@ class CheckinSession:
                 msg_x = (frame_width - msg_size[0]) // 2
                 cv2.putText(frame, bottom_msg, (msg_x, frame_height - 40), cv2.FONT_HERSHEY_DUPLEX, 0.9, bottom_color, 2)
 
-            if show_restart_hint:
-                restart_msg = "Press 'n' to run a new check"
-                restart_size = cv2.getTextSize(restart_msg, cv2.FONT_HERSHEY_DUPLEX, 0.6, 1)[0]
+            if show_restart_hint and self.restart_hint:
+                restart_size = cv2.getTextSize(self.restart_hint, cv2.FONT_HERSHEY_DUPLEX, 0.6, 1)[0]
                 restart_x = (frame_width - restart_size[0]) // 2
-                cv2.putText(frame, restart_msg, (restart_x, frame_height - 10), cv2.FONT_HERSHEY_DUPLEX, 0.6, (200, 200, 200), 1)
+                cv2.putText(frame, self.restart_hint, (restart_x, frame_height - 10), cv2.FONT_HERSHEY_DUPLEX, 0.6, (200, 200, 200), 1)
 
         return frame
 
