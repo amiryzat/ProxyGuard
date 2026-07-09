@@ -14,6 +14,10 @@ function showTab(name) {
         document.getElementById(panels[key]).classList.toggle('active', key === name);
         document.getElementById(buttons[key]).classList.toggle('active', key === name);
     });
+    // Attempt/Review filter chips live in their own tab-panel (shares a row
+    // with search/export instead of sitting inside #tab-panel-attempts) --
+    // toggled here too so it only shows while Attempts is active.
+    document.getElementById('tab-panel-attempts-filters').classList.toggle('active', name === 'attempts');
     document.getElementById('active-tab-field').value = name;
 
     var params = new URLSearchParams(window.location.search);

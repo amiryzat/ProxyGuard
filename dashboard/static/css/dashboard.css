@@ -213,10 +213,30 @@ body {
     color: var(--color-ink);
 }
 
+/* ---- Controls row: filters (left) + search/export (right) --------------
+   One flex row so the two blocks read as a single control bar. The filters
+   column is the flex item that can shrink/wrap; search/export sits at
+   margin-left: auto so it hugs the row's right edge whether or not the
+   filters column is present (e.g. hidden on the Present tab) or has
+   already wrapped onto its own line on narrow screens. */
+
+.controls-row {
+    margin-top: var(--spacing-24);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: var(--spacing-16);
+}
+
+#tab-panel-attempts-filters {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
 /* ---- Table controls: search + export ----------------------------------- */
 
 .table-controls {
-    margin-top: var(--spacing-24);
+    margin-left: auto;
     display: flex;
     flex-wrap: wrap;
     align-items: center;
@@ -337,9 +357,7 @@ form button[type="submit"] {
 .tabs {
     margin-top: var(--spacing-24);
     display: flex;
-    width: fit-content;
-    min-width: 22rem;
-    max-width: 100%;
+    width: 100%;
     background: var(--color-canvas);
     border: 1px solid var(--color-hairline);
     border-radius: var(--radius-cards);
@@ -383,12 +401,15 @@ form button[type="submit"] {
    room between this group and the next. */
 
 .filter-group-label {
-    margin: var(--spacing-16) 0 var(--spacing-8);
+    margin: 0 0 var(--spacing-8);
     font-size: 12px;
     font-weight: 500;
     color: var(--color-mid-gray);
     text-transform: uppercase;
     letter-spacing: 0.03em;
+}
+.quick-filters + .filter-group-label {
+    margin-top: var(--spacing-16);
 }
 
 .quick-filters {

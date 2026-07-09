@@ -168,16 +168,59 @@
             <button type="button" class="tab-button {% if active_tab == 'attempts' %}active{% endif %}" id="tab-btn-attempts" onclick="showTab('attempts')">Attempts</button>
         </div>
 
-        <div class="table-controls">
-            <div class="search-wrap">
-                <input type="text" id="table-search" class="search-input" placeholder="Search student name...">
-                <button type="button" id="search-clear-btn" class="search-clear-btn" aria-label="Clear search" title="Clear search">&times;</button>
+        {# Filters (left) and search/export (right) share one row so they
+           read as one control bar instead of two stacked blocks. The
+           filters column is a tab-panel like present/attempts below --
+           same display:none/active toggle, driven by the same showTab()
+           call -- so it only shows while Attempts is active, with no
+           separate condition needed. Search/export stay a single shared
+           instance (not duplicated per tab) since dashboard.js addresses
+           them by id; margin-left: auto on .table-controls pushes them to
+           the row's right edge whether or not the filters column is
+           present. #}
+        <div class="controls-row">
+            <div class="tab-panel {% if active_tab == 'attempts' %}active{% endif %}" id="tab-panel-attempts-filters">
+                {# Phase D4 refinement: quick filter chips replace the old Reason
+                   dropdown -- same job (narrow the Attempts table by outcome),
+                   instant client-side toggle instead of a GET-submit round trip.
+                   "result-filter-btn" (alongside the shared "quick-filter-btn"
+                   visual class) distinguishes these from the review-filter chips
+                   below in dashboard.js, so the two independent filter groups
+                   never fight over each other's "active" state. #}
+                <p class="filter-group-label">Attempt filters</p>
+                <div class="quick-filters">
+                    <button type="button" class="quick-filter-btn result-filter-btn active" data-filter="all">All</button>
+                    <button type="button" class="quick-filter-btn result-filter-btn" data-filter="success">Successful</button>
+                    <button type="button" class="quick-filter-btn result-filter-btn" data-filter="failed">Failed</button>
+                    <button type="button" class="quick-filter-btn result-filter-btn" data-filter="flagged">Flagged</button>
+                    <button type="button" class="quick-filter-btn result-filter-btn" data-filter="unknown">Unknown</button>
+                    <button type="button" class="quick-filter-btn result-filter-btn" data-filter="duplicate">Duplicate</button>
+                    <button type="button" class="quick-filter-btn result-filter-btn" data-filter="liveness">Liveness Failed</button>
+                </div>
+
+                {# Phase E3: review-status quick filters, same instant client-side
+                   toggle as the result filters above, narrowing by
+                   row.review.review_status instead of row.cells.result. #}
+                <p class="filter-group-label">Review filters</p>
+                <div class="quick-filters">
+                    <button type="button" class="quick-filter-btn review-filter-btn active" data-review-filter="all">All Reviews</button>
+                    <button type="button" class="quick-filter-btn review-filter-btn" data-review-filter="unreviewed">Unreviewed</button>
+                    <button type="button" class="quick-filter-btn review-filter-btn" data-review-filter="accepted">Accepted</button>
+                    <button type="button" class="quick-filter-btn review-filter-btn" data-review-filter="suspicious">Suspicious</button>
+                </div>
             </div>
-            {# Phase D6: current session/tab/search/quick-filter are read from
-               live client state (not just the URL, since tab/search/quick
-               filter can change without a page reload) and sent to
-               /export.csv -- see dashboard.js. #}
-            <button type="button" id="export-csv-btn" class="export-btn">Export CSV</button>
+
+            <div class="table-controls">
+                <div class="search-wrap">
+                    <input type="text" id="table-search" class="search-input" placeholder="Search student name...">
+                    <button type="button" id="search-clear-btn" class="search-clear-btn" aria-label="Clear search" title="Clear search">&times;</button>
+                </div>
+                {# Phase D6: current session/tab/search/quick-filter are read from
+                   live client state (not just the URL, since tab/search/quick
+                   filter can change without a page reload) and sent to
+                   /export.csv -- see dashboard.js. #}
+                <button type="button" id="export-csv-btn" class="export-btn">Export CSV</button>
+            </div>
         </div>
 
         <div class="tab-panel {% if active_tab == 'present' %}active{% endif %}" id="tab-panel-present">
@@ -185,35 +228,6 @@
         </div>
 
         <div class="tab-panel {% if active_tab == 'attempts' %}active{% endif %}" id="tab-panel-attempts">
-            {# Phase D4 refinement: quick filter chips replace the old Reason
-               dropdown -- same job (narrow the Attempts table by outcome),
-               instant client-side toggle instead of a GET-submit round trip.
-               "result-filter-btn" (alongside the shared "quick-filter-btn"
-               visual class) distinguishes these from the review-filter chips
-               below in dashboard.js, so the two independent filter groups
-               never fight over each other's "active" state. #}
-            <p class="filter-group-label">Attempt filters</p>
-            <div class="quick-filters">
-                <button type="button" class="quick-filter-btn result-filter-btn active" data-filter="all">All</button>
-                <button type="button" class="quick-filter-btn result-filter-btn" data-filter="success">Successful</button>
-                <button type="button" class="quick-filter-btn result-filter-btn" data-filter="failed">Failed</button>
-                <button type="button" class="quick-filter-btn result-filter-btn" data-filter="flagged">Flagged</button>
-                <button type="button" class="quick-filter-btn result-filter-btn" data-filter="unknown">Unknown</button>
-                <button type="button" class="quick-filter-btn result-filter-btn" data-filter="duplicate">Duplicate</button>
-                <button type="button" class="quick-filter-btn result-filter-btn" data-filter="liveness">Liveness Failed</button>
-            </div>
-
-            {# Phase E3: review-status quick filters, same instant client-side
-               toggle as the result filters above, narrowing by
-               row.review.review_status instead of row.cells.result. #}
-            <p class="filter-group-label">Review filters</p>
-            <div class="quick-filters">
-                <button type="button" class="quick-filter-btn review-filter-btn active" data-review-filter="all">All Reviews</button>
-                <button type="button" class="quick-filter-btn review-filter-btn" data-review-filter="unreviewed">Unreviewed</button>
-                <button type="button" class="quick-filter-btn review-filter-btn" data-review-filter="accepted">Accepted</button>
-                <button type="button" class="quick-filter-btn review-filter-btn" data-review-filter="suspicious">Suspicious</button>
-            </div>
-
             {# Phase E3: review summary cards -- unreviewed/accepted/suspicious
                counts across the whole session's Attempts rows, not narrowed by
                the reason/quick/review/search filters (same session-wide scope
