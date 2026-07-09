@@ -42,6 +42,12 @@ SNAPSHOT_DIR = os.path.join(SCRIPT_DIR, "..", "logs", "snapshots")
 # Column order matches the CSV schema written by attendance_logger.py.
 CSV_HEADERS = ["name", "date", "time", "session_id", "result", "reason"]
 
+# Auto-refresh interval (seconds), already implemented as a client-side
+# setInterval reload in index.html. Defined once here and passed into the
+# template so the "Auto-refresh every Xs" label can never drift out of sync
+# with the actual reload timer -- both read this single value.
+REFRESH_SECONDS = 7
+
 
 def _slug(text):
     """
@@ -185,19 +191,85 @@ def is_row_flagged(row, report):
     return False
 
 
-def build_summary(display_subset):
+def classify_reason(reason):
     """
-    Same four stat-box counts Phase 1/4 always computed (total/successful/
-    failed/flagged), but computed over whichever subset of display_rows is
-    passed in -- Phase B calls this once per tab (Present/Attempts) so the
-    summary section reflects only the rows currently visible in that tab,
-    rather than the whole session regardless of tab.
+    Maps a `reason` string to a rough good/warn/bad severity for coloring the
+    Reason Breakdown (Phase D2). Data-driven substring matching, the same
+    style already used in build_session_analytics(), rather than a fixed
+    whitelist -- so a reason this project hasn't seen yet (e.g. a future
+    "identity mismatch"/"face changed" outcome) still gets a sensible color
+    instead of falling through unstyled.
     """
+    reason = (reason or "").lower()
+    if reason == "confirmed":
+        return "good"
+    if "liveness" in reason:
+        return "bad"
+    if "duplicate" in reason:
+        return "warn"
+    if "not recognized" in reason or "unknown" in reason:
+        return "warn"
+    return "bad"  # anything else (mismatch, changed/blocked, etc.) is non-routine -> caution
+
+
+def build_reason_breakdown(display_rows):
+    """
+    Counts per `reason` across the selected session (Phase D2), sorted by
+    count descending so the most common outcomes stand out first. Scope
+    matches build_session_analytics() -- the full session, not narrowed by
+    the Attempts-tab reason filter -- since the point of a breakdown is to
+    show all reasons at a glance, including whichever one the filter has
+    currently narrowed to.
+    """
+    counts = {}
+    for d in display_rows:
+        reason = d["cells"].get("reason") or "(none)"
+        counts[reason] = counts.get(reason, 0) + 1
+
+    total = len(display_rows)
+    breakdown = [
+        {
+            "reason": reason,
+            "count": count,
+            "pct": round(count / total * 100, 1) if total else 0,
+            "level": classify_reason(reason),
+        }
+        for reason, count in counts.items()
+    ]
+    breakdown.sort(key=lambda item: item["count"], reverse=True)
+    return breakdown
+
+
+def build_session_analytics(display_rows):
+    """
+    Session-wide analytics cards (Phase D1). Unlike build_summary() (scoped
+    per tab), this always covers the FULL selected session -- Present and
+    Attempts combined -- since a lecturer wants one at-a-glance picture of the
+    session regardless of which tab is open. Built purely from the
+    already-computed display_rows (same rows/flags used everywhere else on
+    the page): no extra CSV read, no extra pattern_flagger call, and no
+    suspicious-pattern rules reimplemented -- `flagged` reuses each row's
+    already-computed flag from is_row_flagged().
+    """
+    total = len(display_rows)
+    successful = sum(1 for d in display_rows if d["cells"].get("result") == "success")
+    failed = sum(1 for d in display_rows if d["cells"].get("result") == "failed")
+    duplicate = sum(1 for d in display_rows if d["cells"].get("reason") == pattern_flagger.DUPLICATE_REASON)
+    unknown = sum(
+        1 for d in display_rows
+        if d["cells"].get("name") == "Unknown" or d["cells"].get("reason") == pattern_flagger.NOT_RECOGNIZED_REASON
+    )
+    liveness_failures = sum(1 for d in display_rows if "liveness" in (d["cells"].get("reason") or "").lower())
+
     return {
-        "total": len(display_subset),
-        "successful": sum(1 for d in display_subset if d["cells"].get("result") == "success"),
-        "failed": sum(1 for d in display_subset if d["cells"].get("result") == "failed"),
-        "flagged": sum(1 for d in display_subset if d["flagged"]),
+        "total": total,
+        "successful": successful,
+        "failed": failed,
+        "flagged": sum(1 for d in display_rows if d["flagged"]),
+        "duplicate": duplicate,
+        "unknown": unknown,
+        "liveness_failures": liveness_failures,
+        "success_rate": round(successful / total * 100, 1) if total else 0,
     }
 
 
@@ -267,12 +339,15 @@ def index():
     if active_tab not in ("present", "attempts"):
         active_tab = "present"
 
-    # Each tab gets its own summary, computed only from that tab's *currently
-    # filtered* rows -- for Attempts that means after the reason filter above
-    # -- so the stat boxes describe exactly what's visible, not the whole
-    # session/tab regardless of the reason filter.
-    summary_present = build_summary(present_rows)
-    summary_attempts = build_summary(attempt_rows)
+    # Session-wide overview cards (Phase D1) and reason breakdown (Phase D2)
+    # -- both from display_rows, i.e. the full selected session before the
+    # tab split above, so they stay correct regardless of which tab is open
+    # or how the Attempts-tab reason filter narrowed it. This replaces the
+    # old per-tab mini summaries (Phase B), which duplicated these same
+    # numbers in a second, smaller summary section -- removed rather than
+    # kept alongside, per Phase D2.
+    session_analytics = build_session_analytics(display_rows)
+    reason_breakdown = build_reason_breakdown(display_rows)
 
     return render_template(
         "index.html",
@@ -284,8 +359,9 @@ def index():
         reasons=reasons,
         selected_reason=selected_reason,
         active_tab=active_tab,
-        summary_present=summary_present,
-        summary_attempts=summary_attempts,
+        session_analytics=session_analytics,
+        reason_breakdown=reason_breakdown,
+        refresh_seconds=REFRESH_SECONDS,
     )
 
 

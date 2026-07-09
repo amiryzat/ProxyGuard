@@ -1,0 +1,243 @@
+/* Minimal styling for readability only -- no theming in Phase 1. */
+body {
+    font-family: Arial, Helvetica, sans-serif;
+    margin: 2rem;
+    color: #222;
+}
+h1 {
+    font-size: 1.5rem;
+}
+table {
+    border-collapse: collapse;
+    width: 100%;
+    margin-top: 1rem;
+}
+th, td {
+    border: 1px solid #ccc;
+    padding: 8px 12px;
+    text-align: left;
+}
+th {
+    background: #f2f2f2;
+}
+tr:nth-child(even) td {
+    background: #fafafa;
+}
+/* Highlight rows that pattern_flagger.py flagged as suspicious
+   (repeated failures, duplicate attempts, unrecognized clusters).
+   Uses !important so it wins over the zebra-striping rule above. */
+tr.flagged td {
+    background: #ffd6d6 !important;
+}
+.empty {
+    margin-top: 1rem;
+    color: #666;
+}
+.filter {
+    margin-top: 1rem;
+}
+.filter label {
+    margin-right: 0.5rem;
+}
+/* Stat boxes, now used only by the Session Overview cards (Phase D1)
+   -- the old per-tab mini summary section (Phase B/4) was removed in
+   Phase D2 to avoid two overlapping summary sections. */
+.stat-box {
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    padding: 0.75rem 1rem;
+    min-width: 6rem;
+    background: #f7f7f7;
+}
+.stat-value {
+    font-size: 1.5rem;
+    font-weight: bold;
+}
+.stat-label {
+    font-size: 0.85rem;
+    color: #555;
+}
+/* Inline verification-snapshot thumbnail in each attendance row. */
+.snapshot-thumb {
+    height: 56px;
+    width: auto;
+    border: 1px solid #ccc;
+    border-radius: 3px;
+    display: block;
+}
+.no-snapshot {
+    color: #999;
+    font-size: 0.85rem;
+    font-style: italic;
+}
+/* Phase B: Present / Attempts tabs on the same page. */
+.tabs {
+    margin-top: 1.5rem;
+    border-bottom: 1px solid #ccc;
+}
+.tab-button {
+    font: inherit;
+    font-size: 1rem;
+    padding: 0.5rem 1rem;
+    margin-right: 0.25rem;
+    border: 1px solid #ccc;
+    border-bottom: none;
+    border-radius: 4px 4px 0 0;
+    background: #f2f2f2;
+    color: #222;
+    cursor: pointer;
+    position: relative;
+    top: 1px;
+}
+.tab-button.active {
+    background: #fff;
+    font-weight: bold;
+    border-bottom: 1px solid #fff;
+}
+.tab-panel {
+    display: none;
+}
+.tab-panel.active {
+    display: block;
+}
+/* Phase C: reason filter inside the Attempts tab. */
+.reason-filter {
+    margin-top: 1rem;
+}
+.reason-filter label {
+    margin-right: 0.5rem;
+}
+/* Phase D1: live monitoring indicator near the title. */
+.live-status {
+    margin-top: 0.25rem;
+    font-size: 0.85rem;
+    color: #555;
+}
+.live-dot {
+    display: inline-block;
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 50%;
+    background: #2e9e4a;
+    margin-right: 0.4rem;
+}
+/* Phase D1: session-wide analytics cards, reusing the .stat-box look
+   but in their own grid so they read as one "session overview" block
+   distinct from the per-tab summaries below the tabs. */
+.analytics {
+    margin-top: 1rem;
+}
+.analytics h2 {
+    font-size: 1.05rem;
+    margin-bottom: 0.5rem;
+}
+.analytics-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+}
+.analytics-grid .stat-box {
+    min-width: 8rem;
+}
+/* Subtle color indicators -- value only, boxes stay neutral. */
+.stat-value.good { color: #2e9e4a; }
+.stat-value.warn { color: #b8860b; }
+.stat-value.bad { color: #b00000; }
+/* Phase D2: reason breakdown -- simple CSS-only horizontal bars, one
+   row per distinct reason in the selected session, sorted by count. */
+.reason-bars {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+.reason-bar-row {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+}
+.reason-bar-label {
+    width: 14rem;
+    flex-shrink: 0;
+    font-size: 0.9rem;
+}
+.reason-bar-track {
+    flex: 1;
+    background: #eee;
+    border-radius: 3px;
+    height: 0.9rem;
+    overflow: hidden;
+}
+.reason-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+}
+.reason-bar-fill.good { background: #2e9e4a; }
+.reason-bar-fill.warn { background: #d9a441; }
+.reason-bar-fill.bad { background: #c0392b; }
+.reason-bar-count {
+    width: 2rem;
+    text-align: right;
+    font-weight: bold;
+    font-size: 0.9rem;
+}
+/* Phase D3: snapshot preview modal. */
+.snapshot-link { cursor: zoom-in; }
+.modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+}
+.modal-overlay.open {
+    display: flex;
+}
+.modal-content {
+    background: #fff;
+    border-radius: 6px;
+    padding: 1rem;
+    max-width: min(90vw, 40rem);
+    max-height: 90vh;
+    overflow-y: auto;
+    position: relative;
+}
+.modal-header {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 0.5rem;
+}
+.modal-close {
+    font-size: 0.9rem;
+    line-height: 1;
+    background: #f2f2f2;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    padding: 0.35rem 0.75rem;
+    cursor: pointer;
+    color: #222;
+}
+.modal-close:hover {
+    background: #e6e6e6;
+}
+.modal-content img {
+    max-width: 100%;
+    max-height: 60vh;
+    display: block;
+    margin: 0 auto 1rem;
+    border-radius: 4px;
+}
+.modal-details {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.25rem 0.75rem;
+    font-size: 0.9rem;
+}
+.modal-details dt {
+    font-weight: bold;
+    color: #555;
+}
+.modal-details dd {
+    margin: 0;
+}

@@ -4,127 +4,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ProxyGuard Attendance</title>
-    <style>
-        /* Minimal styling for readability only -- no theming in Phase 1. */
-        body {
-            font-family: Arial, Helvetica, sans-serif;
-            margin: 2rem;
-            color: #222;
-        }
-        h1 {
-            font-size: 1.5rem;
-        }
-        table {
-            border-collapse: collapse;
-            width: 100%;
-            margin-top: 1rem;
-        }
-        th, td {
-            border: 1px solid #ccc;
-            padding: 8px 12px;
-            text-align: left;
-        }
-        th {
-            background: #f2f2f2;
-        }
-        tr:nth-child(even) td {
-            background: #fafafa;
-        }
-        /* Highlight rows that pattern_flagger.py flagged as suspicious
-           (repeated failures, duplicate attempts, unrecognized clusters).
-           Uses !important so it wins over the zebra-striping rule above. */
-        tr.flagged td {
-            background: #ffd6d6 !important;
-        }
-        .empty {
-            margin-top: 1rem;
-            color: #666;
-        }
-        .filter {
-            margin-top: 1rem;
-        }
-        .filter label {
-            margin-right: 0.5rem;
-        }
-        /* Simple stat boxes for the selected-session summary (Phase 4). */
-        .summary {
-            display: flex;
-            gap: 1rem;
-            margin-top: 1rem;
-            flex-wrap: wrap;
-        }
-        .stat-box {
-            border: 1px solid #ccc;
-            border-radius: 4px;
-            padding: 0.75rem 1rem;
-            min-width: 6rem;
-            background: #f7f7f7;
-        }
-        .stat-value {
-            font-size: 1.5rem;
-            font-weight: bold;
-        }
-        .stat-label {
-            font-size: 0.85rem;
-            color: #555;
-        }
-        .stat-box.flagged-stat .stat-value {
-            color: #b00000;
-        }
-        /* Inline verification-snapshot thumbnail in each attendance row. */
-        .snapshot-thumb {
-            height: 56px;
-            width: auto;
-            border: 1px solid #ccc;
-            border-radius: 3px;
-            display: block;
-        }
-        .no-snapshot {
-            color: #999;
-            font-size: 0.85rem;
-            font-style: italic;
-        }
-        /* Phase B: Present / Attempts tabs on the same page. */
-        .tabs {
-            margin-top: 1.5rem;
-            border-bottom: 1px solid #ccc;
-        }
-        .tab-button {
-            font: inherit;
-            font-size: 1rem;
-            padding: 0.5rem 1rem;
-            margin-right: 0.25rem;
-            border: 1px solid #ccc;
-            border-bottom: none;
-            border-radius: 4px 4px 0 0;
-            background: #f2f2f2;
-            color: #222;
-            cursor: pointer;
-            position: relative;
-            top: 1px;
-        }
-        .tab-button.active {
-            background: #fff;
-            font-weight: bold;
-            border-bottom: 1px solid #fff;
-        }
-        .tab-panel {
-            display: none;
-        }
-        .tab-panel.active {
-            display: block;
-        }
-        /* Phase C: reason filter inside the Attempts tab. */
-        .reason-filter {
-            margin-top: 1rem;
-        }
-        .reason-filter label {
-            margin-right: 0.5rem;
-        }
-    </style>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
 </head>
-<body>
+<body data-refresh-seconds="{{ refresh_seconds }}">
     <h1>ProxyGuard Attendance Log</h1>
+    <div class="live-status">
+        <span class="live-dot"></span>Live monitoring &mdash; auto-refresh every {{ refresh_seconds }}s &mdash; Last updated: <span id="last-updated"></span>
+    </div>
 
     {# Phase C: one form wraps the session filter, the tab state, and the
        Attempts-only reason filter, so changing either dropdown submits both
@@ -147,28 +33,50 @@
         </div>
         {% endif %}
 
-        {% macro render_summary(summary) %}
-    <div class="summary">
-        <div class="stat-box">
-            <div class="stat-value">{{ summary.total }}</div>
-            <div class="stat-label">Total attempts</div>
+        {# Phase D1: session-wide overview, covering the whole selected
+           session (Present + Attempts combined) regardless of which tab is
+           open below -- distinct from the per-tab summaries in each panel. #}
+        {% if session_analytics %}
+        <div class="analytics">
+            <h2>Session Overview</h2>
+            <div class="analytics-grid">
+                <div class="stat-box">
+                    <div class="stat-value">{{ session_analytics.total }}</div>
+                    <div class="stat-label">Total attempts</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-value good">{{ session_analytics.successful }}</div>
+                    <div class="stat-label">Present / successful</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-value bad">{{ session_analytics.failed }}</div>
+                    <div class="stat-label">Failed</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-value {% if session_analytics.flagged %}bad{% endif %}">{{ session_analytics.flagged }}</div>
+                    <div class="stat-label">Flagged</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-value {% if session_analytics.duplicate %}warn{% endif %}">{{ session_analytics.duplicate }}</div>
+                    <div class="stat-label">Duplicate attempts</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-value {% if session_analytics.unknown %}warn{% endif %}">{{ session_analytics.unknown }}</div>
+                    <div class="stat-label">Unknown face</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-value {% if session_analytics.liveness_failures %}warn{% endif %}">{{ session_analytics.liveness_failures }}</div>
+                    <div class="stat-label">Liveness failures</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-value {% if session_analytics.success_rate >= 80 %}good{% elif session_analytics.success_rate >= 50 %}warn{% else %}bad{% endif %}">{{ session_analytics.success_rate }}%</div>
+                    <div class="stat-label">Success rate</div>
+                </div>
+            </div>
         </div>
-        <div class="stat-box">
-            <div class="stat-value">{{ summary.successful }}</div>
-            <div class="stat-label">Successful</div>
-        </div>
-        <div class="stat-box">
-            <div class="stat-value">{{ summary.failed }}</div>
-            <div class="stat-label">Failed</div>
-        </div>
-        <div class="stat-box flagged-stat">
-            <div class="stat-value">{{ summary.flagged }}</div>
-            <div class="stat-label">Flagged</div>
-        </div>
-    </div>
-    {% endmacro %}
+        {% endif %}
 
-    {% macro render_table(rows) %}
+        {% macro render_table(rows) %}
     {% if rows %}
     <table>
         <thead>
@@ -187,7 +95,11 @@
                 {% endfor %}
                 <td>
                     {% if row.snapshot %}
-                    <a href="{{ url_for('snapshot', filename=row.snapshot) }}" target="_blank" title="Open full snapshot">
+                    <a href="{{ url_for('snapshot', filename=row.snapshot) }}" title="Open snapshot preview"
+                       class="snapshot-link"
+                       data-name="{{ row.cells.name }}" data-date="{{ row.cells.date }}" data-time="{{ row.cells.time }}"
+                       data-session="{{ row.cells.session_id }}" data-result="{{ row.cells.result }}" data-reason="{{ row.cells.reason }}"
+                       data-src="{{ url_for('snapshot', filename=row.snapshot) }}">
                         <img class="snapshot-thumb" src="{{ url_for('snapshot', filename=row.snapshot) }}" alt="verification snapshot">
                     </a>
                     {% else %}
@@ -209,7 +121,6 @@
         </div>
 
         <div class="tab-panel {% if active_tab == 'present' %}active{% endif %}" id="tab-panel-present">
-            {{ render_summary(summary_present) }}
             {{ render_table(present_rows) }}
         </div>
 
@@ -226,45 +137,57 @@
                 </select>
                 <noscript><button type="submit">Apply filters</button></noscript>
             </div>
-            {{ render_summary(summary_attempts) }}
+
+            {# Phase D2 refinement: Reason Breakdown only makes sense for
+               failed/proxy-related attempts, so it lives inside the Attempts
+               panel -- the same tab-panel display:none/active toggle that
+               already scopes the reason filter also hides this on Present,
+               with no separate JS/condition needed. Still session-wide (not
+               narrowed by the reason filter itself), same as before. #}
+            {% if reason_breakdown %}
+            <div class="analytics">
+                <h2>Reason Breakdown</h2>
+                <div class="reason-bars">
+                    {% for item in reason_breakdown %}
+                    <div class="reason-bar-row">
+                        <span class="reason-bar-label">{{ item.reason }}</span>
+                        <div class="reason-bar-track">
+                            <div class="reason-bar-fill {{ item.level }}" style="width: {{ item.pct }}%;"></div>
+                        </div>
+                        <span class="reason-bar-count">{{ item.count }}</span>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
+
             {{ render_table(attempt_rows) }}
         </div>
     </form>
 
-    <script>
-        // Simple client-side tab switch -- no page reload, no separate routes.
-        // The session/reason dropdowns still reload the page (they're real GET
-        // filters, already in the URL); this only toggles which of the two
-        // already-rendered panels is visible, keeps the hidden "tab" form field
-        // in sync (so a subsequent dropdown change reopens the same tab), and
-        // -- for auto-refresh below -- also writes "tab" into the URL itself
-        // via replaceState (no navigation), since a client-only tab switch
-        // otherwise never touches the address bar and a reload would silently
-        // fall back to whatever tab the page last loaded with.
-        function showTab(name) {
-            var panels = { present: 'tab-panel-present', attempts: 'tab-panel-attempts' };
-            var buttons = { present: 'tab-btn-present', attempts: 'tab-btn-attempts' };
-            Object.keys(panels).forEach(function (key) {
-                document.getElementById(panels[key]).classList.toggle('active', key === name);
-                document.getElementById(buttons[key]).classList.toggle('active', key === name);
-            });
-            document.getElementById('active-tab-field').value = name;
+    {# Phase D3: snapshot preview modal markup. Must appear BEFORE the
+       dashboard.js <script src> tag below -- it does
+       document.getElementById('snapshot-modal') at parse time, and an
+       element defined later in the document doesn't exist in the DOM yet
+       at that point (this was the bug: modal
+       was null, so every click silently threw and nothing happened). #}
+    <div id="snapshot-modal" class="modal-overlay">
+        <div class="modal-content">
+            <div class="modal-header">
+                <button type="button" class="modal-close" aria-label="Close">&times; Close</button>
+            </div>
+            <img id="modal-img" src="" alt="verification snapshot">
+            <dl class="modal-details">
+                <dt>Name</dt><dd id="modal-name"></dd>
+                <dt>Date</dt><dd id="modal-date"></dd>
+                <dt>Time</dt><dd id="modal-time"></dd>
+                <dt>Session</dt><dd id="modal-session"></dd>
+                <dt>Result</dt><dd id="modal-result"></dd>
+                <dt>Reason</dt><dd id="modal-reason"></dd>
+            </dl>
+        </div>
+    </div>
 
-            var params = new URLSearchParams(window.location.search);
-            params.set('tab', name);
-            history.replaceState(null, '', '?' + params.toString());
-        }
-
-        // Auto-refresh: the session/reason/tab filters are all plain GET
-        // query params by this point, so a full reload of the current URL
-        // re-renders with the latest attendance rows/snapshots/summary while
-        // landing back on the exact same session, reason, and tab -- no
-        // partial-DOM-patching or extra endpoint needed. 7s is inside the
-        // requested 5-10s window: frequent enough to feel live in a
-        // classroom session, not so frequent it causes needless load/flicker.
-        setInterval(function () {
-            window.location.reload();
-        }, 7000);
-    </script>
+    <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
 </body>
 </html>
