@@ -49,7 +49,10 @@ var knownVersion = document.body.dataset.attendanceVersion;
 var pendingReload = false;
 
 function isUserBusy() {
-    if (modal.classList.contains('open')) {
+    // Phase E4: two independent modal types (snapshot preview, review note)
+    // can each be open -- either one blocks a refresh, checked generically
+    // rather than by name so a third modal type would need no change here.
+    if (document.querySelector('.modal-overlay.open')) {
         return true;
     }
     var active = document.activeElement;
@@ -57,7 +60,8 @@ function isUserBusy() {
         active === searchInput ||
         active.id === 'session' ||
         active.closest('.quick-filters') !== null ||
-        active.closest('.tabs') !== null
+        active.closest('.tabs') !== null ||
+        active.closest('.review-cell') !== null // an Accept/Suspicious/Add-note button still holds focus after being clicked
     );
 }
 
@@ -77,13 +81,22 @@ setInterval(function () {
         .catch(function () { /* transient network hiccup -- just try again next tick */ });
 }, refreshSeconds * 1000);
 
-// Phase D3: snapshot preview modal. Event delegation on document
-// (rather than a per-thumbnail onclick) so it keeps working after
-// auto-refresh's full page reload re-renders the table -- the
-// listener is attached once per page load, same as everything else
-// in this script, and every fresh .snapshot-link in the new DOM is
-// covered automatically without re-binding anything.
+// Snapshot preview modal (Phase D3) + review note modal (Phase E4). Event
+// delegation on document (rather than per-element onclick) so both keep
+// working after auto-refresh's full page reload re-renders the table -- the
+// listeners are attached once per page load, and every fresh .snapshot-link/
+// .review-note-btn in the new DOM is covered automatically with no re-binding.
+// Both modals share the same ".modal-overlay"/".modal-close" markup, so a
+// single generic closeModal() handles either one -- see the delegated click
+// handler below -- rather than two near-duplicate close functions that could
+// drift or accidentally close the wrong modal.
 var modal = document.getElementById('snapshot-modal');
+var noteModal = document.getElementById('note-modal');
+var activeNoteCell = null; // .review-cell currently open in the note modal
+
+function closeModal(overlay) {
+    if (overlay) overlay.classList.remove('open');
+}
 
 function openSnapshotModal(link) {
     document.getElementById('modal-img').src = link.dataset.src;
@@ -96,8 +109,86 @@ function openSnapshotModal(link) {
     modal.classList.add('open');
 }
 
-function closeSnapshotModal() {
-    modal.classList.remove('open');
+function openNoteModal(cell) {
+    activeNoteCell = cell;
+    var status = cell.closest('tr').dataset.reviewStatus || 'unreviewed';
+    document.getElementById('note-modal-name').textContent = cell.dataset.name;
+    document.getElementById('note-modal-date').textContent = cell.dataset.date;
+    document.getElementById('note-modal-time').textContent = cell.dataset.time;
+    document.getElementById('note-modal-session').textContent = cell.dataset.session;
+    document.getElementById('note-modal-result').textContent = cell.dataset.result;
+    document.getElementById('note-modal-reason').textContent = cell.dataset.reason;
+    var statusBadge = document.getElementById('note-modal-status');
+    statusBadge.textContent = status;
+    statusBadge.className = 'review-badge review-badge-' + status;
+    document.getElementById('note-modal-textarea').value = cell.querySelector('.review-note-btn').dataset.note || '';
+    noteModal.classList.add('open');
+}
+
+// Updates a row's Add/Edit note button label + short preview text in place
+// after a save -- avoids a page reload just to reflect the new note.
+function updateNoteButton(cell, note) {
+    var btn = cell.querySelector('.review-note-btn');
+    btn.dataset.note = note;
+    btn.textContent = note ? 'Edit note' : 'Add note';
+    var preview = cell.querySelector('.review-note-preview');
+    if (note) {
+        if (!preview) {
+            preview = document.createElement('p');
+            preview.className = 'review-note-preview';
+            cell.appendChild(preview);
+        }
+        preview.textContent = note.length > 60 ? note.slice(0, 60) + '…' : note;
+    } else if (preview) {
+        preview.remove();
+    }
+}
+
+// Phase E2/E3/E4: review status + note, both writing through the same
+// Phase E1 POST /review endpoint -- one shared submit function. Accept/
+// Suspicious pass the row's already-saved note (preserving it, per
+// requirement 8); the note modal's Save passes the current status
+// (preserving it) plus the newly-edited note. On success the status badge
+// (.status-cell -- Phase E3), the row's own data-review-status, and the note
+// button/preview all update in place, then the review summary counts and any
+// active review filter re-apply -- no page reload.
+function submitReview(cell, status, note) {
+    var row = cell.closest('tr');
+    var badge = row.querySelector('.status-cell .review-badge');
+    return fetch('/review', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            session_id: cell.dataset.session,
+            date: cell.dataset.date,
+            time: cell.dataset.time,
+            name: cell.dataset.name,
+            result: cell.dataset.result,
+            reason: cell.dataset.reason,
+            review_status: status,
+            review_note: note,
+        }),
+    }).then(function (response) {
+        if (!response.ok) return;
+        badge.textContent = status;
+        badge.className = 'review-badge review-badge-' + status;
+        row.dataset.reviewStatus = status;
+        updateNoteButton(cell, note);
+        updateReviewSummaryCounts();
+        applyFilters(); // in case an active review filter no longer matches this row's new status
+    });
+}
+
+function updateReviewSummaryCounts() {
+    var counts = { unreviewed: 0, accepted: 0, suspicious: 0 };
+    document.querySelectorAll('#tab-panel-attempts .attendance-row[data-review-status]').forEach(function (row) {
+        var status = row.dataset.reviewStatus;
+        if (status && counts.hasOwnProperty(status)) counts[status]++;
+    });
+    Object.keys(counts).forEach(function (status) {
+        var el = document.getElementById('review-summary-' + status);
+        if (el) el.textContent = counts[status];
+    });
 }
 
 document.addEventListener('click', function (event) {
@@ -107,14 +198,48 @@ document.addEventListener('click', function (event) {
         openSnapshotModal(link);
         return;
     }
-    if (event.target.closest('.modal-close') || event.target === modal) {
-        closeSnapshotModal();
+
+    // Generic modal close: works for the snapshot modal AND the note modal
+    // (Phase E4) without knowing which one is open -- a .modal-close button
+    // closes its own ancestor .modal-overlay, and clicking the dimmed
+    // backdrop closes that overlay. Neither modal's handler can ever close
+    // the other one by mistake.
+    var closeBtn = event.target.closest('.modal-close');
+    if (closeBtn) {
+        closeModal(closeBtn.closest('.modal-overlay'));
+        return;
+    }
+    if (event.target.classList.contains('modal-overlay')) {
+        closeModal(event.target);
+        return;
+    }
+
+    var reviewBtn = event.target.closest('.review-btn');
+    if (reviewBtn) {
+        var cell = reviewBtn.closest('.review-cell');
+        var currentNote = cell.querySelector('.review-note-btn').dataset.note || '';
+        submitReview(cell, reviewBtn.dataset.status, currentNote); // preserve any existing note
+        return;
+    }
+
+    var noteBtn = event.target.closest('.review-note-btn');
+    if (noteBtn) {
+        openNoteModal(noteBtn.closest('.review-cell'));
+        return;
+    }
+
+    if (event.target.id === 'note-modal-save') {
+        var status = activeNoteCell.closest('tr').dataset.reviewStatus || 'unreviewed'; // preserve current status
+        var note = document.getElementById('note-modal-textarea').value;
+        submitReview(activeNoteCell, status, note).then(function () {
+            closeModal(noteModal);
+        });
     }
 });
 
 document.addEventListener('keydown', function (event) {
     if (event.key === 'Escape') {
-        closeSnapshotModal();
+        document.querySelectorAll('.modal-overlay.open').forEach(closeModal);
     }
 });
 
@@ -126,12 +251,23 @@ document.addEventListener('keydown', function (event) {
 // auto-refresh reload without turning every keystroke into a page navigation.
 var SEARCH_STORAGE_KEY = 'dashboardSearch';
 var QUICK_FILTER_STORAGE_KEY = 'dashboardQuickFilter';
+var REVIEW_FILTER_STORAGE_KEY = 'dashboardReviewFilter';
 var searchInput = document.getElementById('table-search');
-var quickFilterButtons = document.querySelectorAll('.quick-filter-btn');
+// "result-filter-btn" / "review-filter-btn" are two independent chip groups
+// that happen to share the same ".quick-filter-btn" pill styling (Phase E3)
+// -- scoping each query to its own class keeps them from clearing each
+// other's "active" state.
+var resultFilterButtons = document.querySelectorAll('.result-filter-btn');
+var reviewFilterButtons = document.querySelectorAll('.review-filter-btn');
 
 function getActiveQuickFilter() {
-    var active = document.querySelector('.quick-filter-btn.active');
+    var active = document.querySelector('.result-filter-btn.active');
     return active ? active.dataset.filter : 'all';
+}
+
+function getActiveReviewFilter() {
+    var active = document.querySelector('.review-filter-btn.active');
+    return active ? active.dataset.reviewFilter : 'all';
 }
 
 function rowMatchesQuickFilter(row, filter) {
@@ -146,18 +282,25 @@ function rowMatchesQuickFilter(row, filter) {
     }
 }
 
+function rowMatchesReviewFilter(row, filter) {
+    if (filter === 'all') return true;
+    return row.dataset.reviewStatus === filter;
+}
+
 function applyFilters() {
     var search = searchInput.value.trim().toLowerCase();
-    // Quick filters only mean anything on Attempts (every Present row is
-    // already a success) -- force "all" whenever that panel isn't the
-    // active tab, so a chip left active there can never hide Present rows.
-    // The chip's own .active class is left alone, so switching back to
-    // Attempts naturally restores whichever filter was last chosen.
+    // Quick/review filters only mean anything on Attempts (every Present row
+    // is already a success with no review) -- force both to "all" whenever
+    // that panel isn't the active tab, so a chip left active there can never
+    // hide Present rows. Each chip's own .active class is left alone, so
+    // switching back to Attempts naturally restores whichever filters were
+    // last chosen.
     var onAttempts = document.getElementById('tab-panel-attempts').classList.contains('active');
     var filter = onAttempts ? getActiveQuickFilter() : 'all';
+    var reviewFilter = onAttempts ? getActiveReviewFilter() : 'all';
     document.querySelectorAll('.attendance-row').forEach(function (row) {
         var matchesSearch = !search || row.dataset.name.toLowerCase().indexOf(search) !== -1;
-        row.style.display = (matchesSearch && rowMatchesQuickFilter(row, filter)) ? '' : 'none';
+        row.style.display = (matchesSearch && rowMatchesQuickFilter(row, filter) && rowMatchesReviewFilter(row, reviewFilter)) ? '' : 'none';
     });
 }
 
@@ -184,29 +327,45 @@ searchClearBtn.addEventListener('click', function () {
 });
 
 var savedQuickFilter = localStorage.getItem(QUICK_FILTER_STORAGE_KEY) || 'all';
-quickFilterButtons.forEach(function (button) {
+resultFilterButtons.forEach(function (button) {
     button.classList.toggle('active', button.dataset.filter === savedQuickFilter);
     button.addEventListener('click', function () {
-        quickFilterButtons.forEach(function (b) { b.classList.remove('active'); });
+        resultFilterButtons.forEach(function (b) { b.classList.remove('active'); });
         button.classList.add('active');
         localStorage.setItem(QUICK_FILTER_STORAGE_KEY, button.dataset.filter);
         applyFilters();
     });
 });
 
-applyFilters(); // apply restored search/filter immediately on load (incl. after auto-refresh)
+// Phase E3: review-status filter chips -- identical wiring to the result
+// filter chips above, just scoped to .review-filter-btn / its own storage
+// key, so the two groups' selections persist and restore independently.
+var savedReviewFilter = localStorage.getItem(REVIEW_FILTER_STORAGE_KEY) || 'all';
+reviewFilterButtons.forEach(function (button) {
+    button.classList.toggle('active', button.dataset.reviewFilter === savedReviewFilter);
+    button.addEventListener('click', function () {
+        reviewFilterButtons.forEach(function (b) { b.classList.remove('active'); });
+        button.classList.add('active');
+        localStorage.setItem(REVIEW_FILTER_STORAGE_KEY, button.dataset.reviewFilter);
+        applyFilters();
+    });
+});
 
-// Phase D6: Export CSV. Reads LIVE client state -- not just the URL, since
-// tab/search/quick-filter can all change without a page reload -- and hands
-// it to /export.csv as query params; the server rebuilds the same filtered
-// row set (see matches_quick_filter() in app.py) and returns it as a
-// download. Quick filter is only meaningful on Attempts (mirrors
-// applyFilters()'s own onAttempts gate), so it's forced to "all" otherwise.
+applyFilters(); // apply restored search/filters immediately on load (incl. after auto-refresh)
+
+// Phase D6/E3: Export CSV. Reads LIVE client state -- not just the URL, since
+// tab/search/quick-filter/review-filter can all change without a page reload
+// -- and hands it to /export.csv as query params; the server rebuilds the
+// same filtered row set (see matches_quick_filter()/matches_review_filter()
+// in app.py) and returns it as a download. Both filters are only meaningful
+// on Attempts (mirrors applyFilters()'s own onAttempts gate), so both are
+// forced to "all" otherwise.
 document.getElementById('export-csv-btn').addEventListener('click', function () {
     var params = new URLSearchParams(window.location.search);
     var tab = document.getElementById('active-tab-field').value;
     params.set('tab', tab);
     params.set('search', searchInput.value);
     params.set('quick_filter', tab === 'attempts' ? getActiveQuickFilter() : 'all');
+    params.set('review_filter', tab === 'attempts' ? getActiveReviewFilter() : 'all');
     window.location.href = '/export.csv?' + params.toString();
 });

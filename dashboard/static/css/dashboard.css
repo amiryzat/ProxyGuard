@@ -443,6 +443,96 @@ tr.flagged td {
     background: rgba(231, 0, 11, 0.04);
 }
 
+/* ---- Review status (Phase E2/E3, Attempts tab only) ---------------------
+   Status badge lives in its own .status-cell; .review-cell holds only the
+   Accept/Suspicious actions + note field, laid out as a single flex column
+   with consistent gaps (rather than per-child margins) so buttons/input
+   align cleanly and nothing overflows a normal row height. Subtle tints
+   only -- same restrained treatment as the flagged-row background above,
+   not solid chromatic fills. */
+
+.status-cell {
+    vertical-align: middle;
+    white-space: nowrap;
+}
+
+.review-badge {
+    display: inline-block;
+    font-size: 12px;
+    font-weight: 500;
+    text-transform: capitalize;
+    padding: 2px 10px;
+    border-radius: var(--radius-badges);
+    border: 1px solid var(--color-hairline);
+    background: var(--color-canvas);
+    color: var(--color-mid-gray);
+}
+.review-badge-accepted {
+    background: rgba(21, 128, 61, 0.08);
+    border-color: rgba(21, 128, 61, 0.25);
+    color: #15803d;
+}
+.review-badge-suspicious {
+    background: rgba(231, 0, 11, 0.06);
+    border-color: rgba(231, 0, 11, 0.25);
+    color: var(--color-ember);
+}
+
+.review-cell {
+    min-width: 12rem;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.review-actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.review-btn {
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 4px 10px;
+    border: 1px solid var(--color-hairline);
+    border-radius: var(--radius-buttons);
+    background: transparent;
+    color: var(--color-ink);
+    cursor: pointer;
+    white-space: nowrap;
+}
+.review-btn:hover {
+    background: var(--color-surface-alt);
+}
+
+/* Phase E4: note editing moved into its own modal -- the row itself only
+   shows a small Add/Edit note trigger plus a short preview of any existing
+   note, instead of an inline input+Save that made the column cramped. */
+.review-note-btn {
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 4px 10px;
+    border: 1px solid var(--color-hairline);
+    border-radius: var(--radius-buttons);
+    background: transparent;
+    color: var(--color-ink);
+    cursor: pointer;
+    align-self: flex-start;
+}
+.review-note-btn:hover {
+    background: var(--color-surface-alt);
+}
+
+.review-note-preview {
+    margin: 0;
+    font-size: 12px;
+    color: var(--color-mid-gray);
+    overflow-wrap: anywhere; /* long unbroken text (e.g. a pasted id) wraps instead of overflowing the cell */
+}
+
 .empty {
     margin: 0;
     padding: var(--spacing-20);
@@ -544,4 +634,49 @@ tr.flagged td {
 .modal-details dd {
     margin: 0;
     color: var(--color-ink);
+}
+
+/* ---- Review note modal (Phase E4) --------------------------------------- */
+
+.note-textarea {
+    display: block;
+    width: 100%;
+    margin-top: var(--spacing-16);
+    font-family: inherit;
+    font-size: 13px;
+    padding: 10px 12px;
+    background: var(--color-canvas);
+    border: 1px solid var(--color-hairline);
+    border-radius: var(--radius-inputs);
+    color: var(--color-ink);
+    resize: vertical;
+}
+.note-textarea:focus {
+    outline: none;
+    background: var(--color-paper);
+    border-color: var(--color-mid-gray);
+}
+
+.note-modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--spacing-8);
+    margin-top: var(--spacing-16);
+}
+
+/* Primary Filled Button (DESIGN.md) -- the one dark-fill action in this
+   dashboard, reserved for the modal's main commit action (Save). */
+.note-save-btn {
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    padding: 7px 16px;
+    border: none;
+    border-radius: var(--radius-buttons);
+    background: var(--color-ink);
+    color: var(--color-surface-alt);
+    cursor: pointer;
+}
+.note-save-btn:hover {
+    background: var(--color-ink-soft);
 }

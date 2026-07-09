@@ -12,6 +12,7 @@
 # later phases.
 
 import csv
+import hashlib
 import io
 import os
 import re
@@ -49,6 +50,103 @@ CSV_HEADERS = ["name", "date", "time", "session_id", "result", "reason"]
 # once here and passed into the template so the "checking every Xs" label can
 # never drift out of sync with the actual poll timer -- both read this value.
 REFRESH_SECONDS = 7
+
+# ---- Phase E1: lecturer review data layer ----------------------------------
+# Review decisions ("was this attempt actually suspicious?") are stored
+# entirely separately from logs/attendance.csv -- that file stays the raw,
+# untouched system-generated record. logs/reviews.csv is a small, independent
+# CSV of review decisions keyed by a deterministic hash of the attendance
+# row's own identifying fields, since attendance.csv has no id column and is
+# not the dashboard's file to redesign.
+REVIEWS_PATH = os.path.join(SCRIPT_DIR, "..", "logs", "reviews.csv")
+REVIEW_HEADERS = ["review_id", "session_id", "date", "time", "name", "result", "reason",
+                   "review_status", "review_note", "reviewed_at"]
+REVIEW_STATUSES = {"unreviewed", "accepted", "suspicious"}
+
+
+def build_review_id(session_id, date, time_str, name, result, reason):
+    """
+    Deterministic key for one attendance attempt, derived from the same
+    fields that identify it in attendance.csv (session_id/date/time/name/
+    result/reason). Same inputs always produce the same review_id, so a
+    lecturer's review survives reloads/exports without adding an id column
+    to attendance.csv itself. Not a security hash -- just a stable, safe-as-
+    a-filename-or-CSV-cell slug, so a fast truncated sha256 is enough.
+    """
+    raw = "|".join([session_id or "", date or "", time_str or "", name or "", result or "", reason or ""])
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def read_reviews(reviews_path=None):
+    """All review records keyed by review_id. Empty dict if none recorded yet
+    (attendance rows with no matching entry are simply "unreviewed").
+    reviews_path defaults to the live REVIEWS_PATH global read at call time
+    (not a def-time snapshot -- a `reviews_path=REVIEWS_PATH` default would
+    bind once at import and silently ignore any later override, e.g. in
+    tests that point REVIEWS_PATH at a temp file)."""
+    reviews_path = reviews_path or REVIEWS_PATH
+    if not os.path.exists(reviews_path):
+        return {}
+    with open(reviews_path, newline="") as f:
+        return {row["review_id"]: row for row in csv.DictReader(f)}
+
+
+def get_review_for_row(cells, reviews):
+    """
+    review_status/review_note/reviewed_at for one attendance row's cells
+    dict, defaulting to "unreviewed"/""/"" when no review record exists yet
+    (requirement: an attendance row with no review record is unreviewed).
+    """
+    review_id = build_review_id(
+        cells.get("session_id"), cells.get("date"), cells.get("time"),
+        cells.get("name"), cells.get("result"), cells.get("reason"),
+    )
+    record = reviews.get(review_id)
+    if record is None:
+        return {"review_status": "unreviewed", "review_note": "", "reviewed_at": ""}
+    return {
+        "review_status": record.get("review_status", "unreviewed"),
+        "review_note": record.get("review_note", ""),
+        "reviewed_at": record.get("reviewed_at", ""),
+    }
+
+
+def write_review(session_id, date, time_str, name, result, reason, review_status, review_note):
+    """
+    Upsert one review record. logs/reviews.csv holds one row per reviewed
+    attempt (not per poll/refresh), so at this prototype's scale a full
+    read-modify-write on every call is simple and fine -- no locking beyond
+    what a single-lecturer dashboard needs.
+    # ponytail: read-modify-write, not append-only -- fine for a handful of
+    # reviews per session; move to per-row file locking if this ever needs
+    # concurrent writers.
+    """
+    if review_status not in REVIEW_STATUSES:
+        raise ValueError(f"invalid review_status: {review_status!r}")
+
+    review_id = build_review_id(session_id, date, time_str, name, result, reason)
+    reviews = read_reviews()
+    reviews[review_id] = {
+        "review_id": review_id,
+        "session_id": session_id or "",
+        "date": date or "",
+        "time": time_str or "",
+        "name": name or "",
+        "result": result or "",
+        "reason": reason or "",
+        "review_status": review_status,
+        "review_note": review_note or "",
+        "reviewed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+    os.makedirs(os.path.dirname(REVIEWS_PATH), exist_ok=True)
+    with open(REVIEWS_PATH, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=REVIEW_HEADERS)
+        writer.writeheader()
+        for row in reviews.values():
+            writer.writerow(row)
+
+    return review_id
 
 
 def get_attendance_version():
@@ -349,6 +447,31 @@ def matches_quick_filter(display_row, quick_filter):
     return True  # "all" (or an unrecognized value) -- no filtering
 
 
+def matches_review_filter(display_row, review_filter):
+    """
+    Server-side mirror of rowMatchesReviewFilter() in dashboard.js (Phase E3).
+    display_row must already carry a "review" key (see get_review_for_row()).
+    """
+    if review_filter in REVIEW_STATUSES:
+        return display_row["review"]["review_status"] == review_filter
+    return True  # "all" (or an unrecognized value) -- no filtering
+
+
+def build_review_summary(attempt_rows_with_review):
+    """
+    Unreviewed/Accepted/Suspicious counts across the selected session's
+    Attempts rows (Phase E3) -- same session-wide-but-Attempts-scoped pattern
+    as Reason Breakdown: computed from the full attempt_rows_all (every row
+    already carries a "review" key by the time this is called), not narrowed
+    by the quick/review filters or search, so the summary always reflects the
+    whole session regardless of what's currently filtered into view.
+    """
+    counts = {"unreviewed": 0, "accepted": 0, "suspicious": 0}
+    for d in attempt_rows_with_review:
+        counts[d["review"]["review_status"]] += 1
+    return counts
+
+
 SESSION_ID_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{4}_(?P<code>[A-Za-z0-9]+)_Week(?P<week>\d+)$")
 
 
@@ -391,6 +514,18 @@ def index():
     present_rows = [d for d in display_rows if d["cells"].get("result") == "success"]
     attempt_rows_all = [d for d in display_rows if d["cells"].get("result") == "failed"]
 
+    # Phase E2: attach each row's review decision (Phase E1 data layer) to
+    # every Attempts row for the session, before any reason/review filter
+    # narrows it -- so build_review_summary() below always reflects the whole
+    # session, and the reason/review filters can each independently narrow
+    # from the same fully-enriched list. Present rows never get a "review"
+    # key at all -- the template gates the whole column on `row.review is
+    # defined`, keeping Present clean with zero extra work.
+    reviews = read_reviews()
+    for d in attempt_rows_all:
+        d["review"] = get_review_for_row(d["cells"], reviews)
+    review_summary = build_review_summary(attempt_rows_all)
+
     # Phase C: reason filter, scoped to the Attempts tab and applied on top of
     # the session filter (not instead of it) -- options are the distinct
     # reasons among *this session's* failed rows (attempt_rows_all, before the
@@ -408,6 +543,12 @@ def index():
         attempt_rows = attempt_rows_all
     else:
         attempt_rows = [d for d in attempt_rows_all if d["cells"].get("reason") == selected_reason]
+
+    # Note: unlike selected_reason above, review_filter (like quick_filter) is
+    # never read here -- both are pure client-side/localStorage-driven chips
+    # (see dashboard.js), instantly re-filtering the already-rendered rows
+    # with no page reload. Only /export.csv reads ?review_filter= server-side,
+    # the same division of labor already used for ?quick_filter=.
 
     # Which tab should render as active. Explicit ?tab=... wins; otherwise a
     # ?reason=... in the URL implies the user was narrowing Attempts (e.g. a
@@ -439,6 +580,7 @@ def index():
         active_tab=active_tab,
         session_analytics=session_analytics,
         reason_breakdown=reason_breakdown,
+        review_summary=review_summary,
         refresh_seconds=REFRESH_SECONDS,
         # Phase D5: the version this page was rendered with, so dashboard.js
         # has a baseline to compare each /status poll against without an
@@ -469,11 +611,12 @@ def export_csv():
     Server-side CSV export (Phase D6) mirroring exactly what the lecturer is
     currently looking at: session (?session=, same param the dashboard table
     uses), tab (?tab=present/attempts -> result success/failed), and the
-    same search/quick-filter predicates dashboard.js applies client-side
-    (?search=, ?quick_filter=). Reimplemented server-side rather than reading
-    the DOM, since a file download is a fresh request with no client-side row
-    list to hand over -- see build_session_display_rows()/
-    matches_quick_filter() above, shared with index() and dashboard.js.
+    same search/quick-filter/review-filter predicates dashboard.js applies
+    client-side (?search=, ?quick_filter=, ?review_filter=). Reimplemented
+    server-side rather than reading the DOM, since a file download is a fresh
+    request with no client-side row list to hand over -- see
+    build_session_display_rows()/matches_quick_filter()/
+    matches_review_filter() above, shared with index() and dashboard.js.
     """
     rows = read_attendance_rows()
     sessions = unique_sessions(rows)
@@ -484,27 +627,83 @@ def export_csv():
         tab = "present"
     search = (request.args.get("search") or "").strip().lower()
     quick_filter = request.args.get("quick_filter") or "all"
+    review_filter = request.args.get("review_filter") or "all"
 
     display_rows = build_session_display_rows(rows, selected_session)
+
+    # Phase E1/E3: attach each row's review decision before filtering, so
+    # matches_review_filter() and the CSV columns below both read the same
+    # already-computed value instead of looking it up twice.
+    reviews = read_reviews()
+    for d in display_rows:
+        d["review"] = get_review_for_row(d["cells"], reviews)
+
     wanted_result = "success" if tab == "present" else "failed"
     export_rows = [
         d for d in display_rows
         if d["cells"].get("result") == wanted_result
         and (not search or search in (d["cells"].get("name") or "").lower())
         and matches_quick_filter(d, quick_filter)
+        and matches_review_filter(d, review_filter)
     ]
 
     buffer = io.StringIO()
     writer = csv.writer(buffer)
-    writer.writerow(CSV_HEADERS + ["snapshot"])
+    writer.writerow(CSV_HEADERS + ["snapshot", "review_status", "review_note", "reviewed_at"])
     for d in export_rows:
-        writer.writerow([d["cells"].get(header, "") for header in CSV_HEADERS] + [d["snapshot"] or ""])
+        writer.writerow(
+            [d["cells"].get(header, "") for header in CSV_HEADERS]
+            + [d["snapshot"] or "", d["review"]["review_status"], d["review"]["review_note"], d["review"]["reviewed_at"]]
+        )
 
     return Response(
         buffer.getvalue(),
         mimetype="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{build_export_filename(selected_session, tab)}"'},
     )
+
+
+@app.route("/review", methods=["POST"])
+def review():
+    """
+    Record a lecturer's review decision for one attendance attempt (Phase E1
+    data layer -- no visible UI wired to this yet). attendance.csv is never
+    touched; this only ever reads/writes logs/reviews.csv.
+
+    Accepts either:
+      - session_id/date/time/name/result/reason (the row's own identifying
+        fields, matching build_review_id()) -- creates or updates that
+        attempt's review, or
+      - review_id alone -- updates just review_status/review_note on an
+        attempt already reviewed once (its stored identity fields are reused
+        rather than re-sent).
+    """
+    data = request.get_json(silent=True) or request.form
+
+    review_status = data.get("review_status", "")
+    if review_status not in REVIEW_STATUSES:
+        return jsonify({"error": "invalid review_status"}), 400
+    review_note = data.get("review_note", "")
+
+    session_id = data.get("session_id", "")
+    date = data.get("date", "")
+    time_str = data.get("time", "")
+    name = data.get("name", "")
+    result = data.get("result", "")
+    reason = data.get("reason", "")
+
+    if not (session_id and date and time_str and name and result and reason):
+        review_id = data.get("review_id", "")
+        if not review_id:
+            return jsonify({"error": "provide review_id, or session_id/date/time/name/result/reason"}), 400
+        existing = read_reviews().get(review_id)
+        if existing is None:
+            return jsonify({"error": "unknown review_id"}), 404
+        session_id, date, time_str = existing["session_id"], existing["date"], existing["time"]
+        name, result, reason = existing["name"], existing["result"], existing["reason"]
+
+    new_review_id = write_review(session_id, date, time_str, name, result, reason, review_status, review_note)
+    return jsonify({"review_id": new_review_id, "review_status": review_status, "review_note": review_note})
 
 
 @app.route("/snapshot/<path:filename>")
