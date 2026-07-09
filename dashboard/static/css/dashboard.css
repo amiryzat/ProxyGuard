@@ -325,36 +325,49 @@ form button[type="submit"] {
     cursor: pointer;
 }
 
-/* ---- Tabs --------------------------------------------------------------
-   Segmented-control treatment: canvas-tone track, active tab lifts onto a
-   white pill with a subtle shadow (the dark-on-light-adjacent inversion is
-   the only chromatic interaction the system allows). */
+/* ---- Tabs ----------------------------------------------------------------
+   Main view switch (Present / Attempts) -- a large bordered segmented
+   control, deliberately bigger and heavier than the filter pills below it
+   so the hierarchy reads at a glance: this switches the whole view, the
+   pills below only narrow what's already showing. Canvas-tone track, a
+   hairline border around the whole switch, a center divider between the
+   two equal segments, and the active segment lifts onto a white card with
+   a subtle shadow (the only chromatic interaction the system allows). */
 
 .tabs {
     margin-top: var(--spacing-24);
-    display: inline-flex;
-    gap: 2px;
+    display: flex;
+    width: fit-content;
+    min-width: 22rem;
+    max-width: 100%;
     background: var(--color-canvas);
-    border-radius: var(--radius-buttons);
-    padding: 3px;
+    border: 1px solid var(--color-hairline);
+    border-radius: var(--radius-cards);
+    padding: 4px;
 }
 
 .tab-button {
+    flex: 1;
     font-family: inherit;
-    font-size: 13px;
-    font-weight: 500;
-    padding: 7px 16px;
+    font-size: 15px;
+    font-weight: 600;
+    padding: 12px 28px;
     border: none;
-    border-radius: calc(var(--radius-buttons) - 3px);
+    border-radius: calc(var(--radius-cards) - 4px);
     background: transparent;
     color: var(--color-mid-gray);
     cursor: pointer;
+}
+
+.tab-button:first-child {
+    border-right: 1px solid var(--color-hairline);
 }
 
 .tab-button.active {
     background: var(--color-paper);
     color: var(--color-ink);
     box-shadow: var(--shadow-subtle);
+    border-right-color: transparent;
 }
 
 .tab-panel {
@@ -364,10 +377,21 @@ form button[type="submit"] {
     display: block;
 }
 
-/* ---- Quick filter chips (Badge component, Attempts tab only) ---------- */
+/* ---- Quick filter chips (Badge component, Attempts tab only) ----------
+   Visually secondary to the .tabs switch above: smaller pills, muted
+   section label instead of a heading, tighter internal spacing but more
+   room between this group and the next. */
+
+.filter-group-label {
+    margin: var(--spacing-16) 0 var(--spacing-8);
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--color-mid-gray);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
 
 .quick-filters {
-    margin-top: var(--spacing-16);
     display: flex;
     flex-wrap: wrap;
     gap: var(--spacing-8);

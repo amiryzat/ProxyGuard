@@ -163,6 +163,11 @@
            active tab, so a chip left active there can never hide rows on
            Present; restores the last search term from localStorage so it
            survives an auto-refresh reload. #}
+        <div class="tabs">
+            <button type="button" class="tab-button {% if active_tab == 'present' %}active{% endif %}" id="tab-btn-present" onclick="showTab('present')">Present</button>
+            <button type="button" class="tab-button {% if active_tab == 'attempts' %}active{% endif %}" id="tab-btn-attempts" onclick="showTab('attempts')">Attempts</button>
+        </div>
+
         <div class="table-controls">
             <div class="search-wrap">
                 <input type="text" id="table-search" class="search-input" placeholder="Search student name...">
@@ -173,11 +178,6 @@
                filter can change without a page reload) and sent to
                /export.csv -- see dashboard.js. #}
             <button type="button" id="export-csv-btn" class="export-btn">Export CSV</button>
-        </div>
-
-        <div class="tabs">
-            <button type="button" class="tab-button {% if active_tab == 'present' %}active{% endif %}" id="tab-btn-present" onclick="showTab('present')">Present</button>
-            <button type="button" class="tab-button {% if active_tab == 'attempts' %}active{% endif %}" id="tab-btn-attempts" onclick="showTab('attempts')">Attempts</button>
         </div>
 
         <div class="tab-panel {% if active_tab == 'present' %}active{% endif %}" id="tab-panel-present">
@@ -192,6 +192,7 @@
                visual class) distinguishes these from the review-filter chips
                below in dashboard.js, so the two independent filter groups
                never fight over each other's "active" state. #}
+            <p class="filter-group-label">Attempt filters</p>
             <div class="quick-filters">
                 <button type="button" class="quick-filter-btn result-filter-btn active" data-filter="all">All</button>
                 <button type="button" class="quick-filter-btn result-filter-btn" data-filter="success">Successful</button>
@@ -205,6 +206,7 @@
             {# Phase E3: review-status quick filters, same instant client-side
                toggle as the result filters above, narrowing by
                row.review.review_status instead of row.cells.result. #}
+            <p class="filter-group-label">Review filters</p>
             <div class="quick-filters">
                 <button type="button" class="quick-filter-btn review-filter-btn active" data-review-filter="all">All Reviews</button>
                 <button type="button" class="quick-filter-btn review-filter-btn" data-review-filter="unreviewed">Unreviewed</button>
