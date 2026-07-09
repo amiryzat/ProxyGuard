@@ -163,6 +163,51 @@ Fixed.
 
 ---
 
+## Bug 8: Failed liveness attempts from a recognized student were logged as "Unknown"
+
+### Bug
+A registered student who was correctly recognized during a check-in, but then failed the head-movement/blink liveness challenge, had their attendance row logged as `name=Unknown` instead of their real name — even though the on-screen label and the verification snapshot filename both showed the correct name the whole time. The dashboard, which reads directly from `logs/attendance.csv`, inherited the same problem.
+
+### Where
+`src/main.py`, `CheckinSession.process_frame` — the terminal-outcome block that calls `log_attendance(...)`.
+
+### Cause
+The identity passed to `log_attendance` was `self.confirmed_name or "Unknown"`. `confirmed_name` is explicitly set to `None` on **every** failed outcome (`liveness_failed`, and `not_recognized` whenever no confident match was made) regardless of whether the person had already been confidently recognized earlier in the same attempt. So any failed attempt fell straight to `"Unknown"` in the CSV, while the snapshot filename (already fixed in Bug 2) used the bad-frame-protected `last_known_name` and showed the real name — the two outputs disagreed on the same attempt.
+
+### Fix
+Changed the logged identity to `self.confirmed_name or self.last_known_name or "Unknown"`. `identified_name` and `last_known_name` are updated from the exact same trigger (a single confidently recognized face) and always move in lockstep pre-lock, and `confirmed_name` is only ever derived from `identified_name` — so `confirmed_name` is never truthy while `last_known_name` is falsy, meaning this fallback **never changes a successful "confirmed" row**, it only recovers the identity on a failure. A genuinely unrecognized attempt (`not_recognized`) still logs `"Unknown"`, since `last_known_name` is also `None` in that case. Session-based duplicate detection is unaffected, since it only triggers on `result == "success"`, which still uses `confirmed_name` unchanged. Only `src/main.py` was modified.
+
+### Status
+Fixed.
+
+---
+
+## Bug 9: Recognized identity could silently transfer to a different/swapped face during an active liveness challenge (proxy bypass)
+
+### Bug
+A serious anti-proxy hole: a student could be correctly recognized once, then swap in a different face (an unregistered face, another student's photo, or a phone screen) and still have the liveness challenge complete under the *first* recognized identity. Demonstrated bypass: recognize a real face as a registered student, hide it, bring it back into frame to get re-recognized, then quickly hold up a phone image of a different person at the same screen position — the bounding box and the eventual confirmed identity kept using the real student's name even though a different face was now performing the head-movement/blink challenge.
+
+### Where
+`src/main.py`, `CheckinSession` — `identified_name`/`last_known_name` tracking in `process_frame`, and the `"passed"` branch that derives `confirmed_name`.
+
+### Cause
+`identified_name` (and `last_known_name`) were **sticky with no re-validation**: once set from a single confident recognition frame, nothing ever cleared them if a later frame showed a different face or `"Unknown"` — they only ever got *overwritten* by another confident match, never invalidated by a mismatch. Meanwhile the challenge's pass/fail signal comes purely from mediapipe's blink/head-pose on whatever face is *currently* in frame, with no awareness of identity at all. The two signals were only ever glued together through the stale `identified_name`, so recognizing a face once was enough to bind that name to the rest of the attempt, regardless of who (or what image) was actually performing the challenge.
+
+### Fix
+Added a conservative identity-liveness continuity guard, `CheckinSession._update_identity_continuity()` (see [[decisions]] Decision 11 for the design rationale):
+- Once an identity is locked in for the attempt, a later single-face recognition check only counts as continuous if it returns the **same name** *and* stays spatially close to the last confirmed face position (center-distance ≤ 35% of frame width — a deliberately simple check, not real object tracking).
+- Up to 2 consecutive mismatched checks are tolerated (mirroring the existing single-bad-frame anti-flicker slack from Bug 1), so one stray misdetection during a head turn doesn't wipe a legitimate student's identity.
+- On the 3rd consecutive mismatch, `identified_name`/`last_known_name`/the tracked face position are all cleared and the challenge restarts from scratch (fresh direction + fresh timer) — the identity must be re-earned by a continuously present, matching face.
+- Separately, the `"passed"` branch now only confirms `identified_name` when `identity_mismatch_streak == 0` **at that exact instant**, closing a narrow race window where a challenge could complete during the tolerance grace period, just before the streak formally cleared the identity.
+- A brief "Face changed or lost, please keep the same face in frame" message shows on-frame and via `checkin_app`'s status banner when continuity breaks.
+
+Verified (via `CheckinSession` driven with synthetic recognition results, no camera needed): a real recognition followed by a swap to `"Unknown"` at the same position clears the identity within 3 checks and never confirms mid-grace-period; a single stray misdetection does not falsely reset a legitimate student; swapping to a *different* registered student's face is also blocked; a large spatial jump alone breaks continuity even if the name happened to still match. A minimal self-check for the geometric threshold lives in `src/test_face_continuity.py`. Multi-face blocking (Bug 5 / Decision 10) is unaffected — this guard only runs pre-lock on single-face frames and defers to the existing multi-face pause otherwise. Only `src/main.py` was modified (plus the new standalone `src/test_face_continuity.py`).
+
+### Status
+Fixed.
+
+---
+
 ## Related Documentation
 
 - [[project-overview]]

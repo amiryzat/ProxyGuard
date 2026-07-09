@@ -15,12 +15,15 @@ Normal face recognition attendance systems can be fooled when a student checks i
 - Recognize registered students using stored frontal face reference images.
 - Detect liveness through blink detection.
 - Detect liveness through randomized head movement.
-- Log attendance results with success or failure reasons.
+- Enforce that exactly one person is present during an active check-in, and that the recognized identity stays bound to the same continuous face throughout the challenge — preventing a recognized identity from silently transferring to a swapped-in face or photo.
+- Log attendance results with success or failure reasons, correctly attributing failed attempts to the recognized student when one was identified.
 - Flag suspicious attendance patterns for lecturer review.
 
 A randomized voice challenge and a mid-challenge identity re-verification were also built but have since been **removed from the live check-in flow** to prioritize reliability at the current proposal stage; the voice module (`src/voice_challenge.py`) is retained for possible reintegration. See [[decisions]] (Decision 7).
 
-Session identity has since been extended (Phase 1): rather than a bare timestamp, `session_id` now also carries the selected class subject and week number, since a single room/date can host multiple different subjects. See [[decisions]] (Decision 8). A Phase 2a student-facing web setup page (`checkin_app/`) now lets a lecturer build one of these session IDs from a browser instead of the terminal; it does not yet perform any check-in itself. See [[decisions]] (Decision 9).
+Session identity has since been extended (Phase 1): rather than a bare timestamp, `session_id` now also carries the selected class subject and week number, since a single room/date can host multiple different subjects. See [[decisions]] (Decision 8). A student-facing web app (`checkin_app/`) lets a lecturer build one of these session IDs from a browser (Phase 2a) and now also runs the full live check-in flow there, streaming the webcam into the browser (Phase 2b). See [[decisions]] (Decision 9).
+
+Two anti-proxy safeguards were added after live testing surfaced real bypasses: single-person enforcement during the active challenge (Decision 10), and an identity-liveness continuity guard that requires the recognized face to remain the same one throughout the challenge (Decision 11) — see [[bugs]] Bug 5 and Bug 9.
 
 ## Tech Stack
 - Python 3.10+
@@ -33,7 +36,7 @@ Session identity has since been extended (Phase 1): rather than a bare timestamp
 - Flask for the lecturer-facing dashboard (`dashboard/`, built)
 
 ## Current Scope
-The current prototype focuses on a local webcam-based attendance flow. It includes face recognition, liveness detection (blink + head movement), attendance logging, duplicate detection, and suspicious pattern flagging. The voice challenge is built as a module but is not currently part of the live flow (see [[decisions]] Decision 7). The lecturer dashboard is built (`dashboard/`). A student-facing check-in web app (`checkin_app/`) is being built in phases: Phase 2a (setup page only — pick class + week, generate and display `session_id`) is done; Phase 2b (camera streaming and the live check-in/liveness flow inside that web app) is not yet built. Only testing and refinement (plus the remaining check-in web app phase) remain.
+The current prototype focuses on a webcam-based attendance flow, available through two interfaces that share one underlying check-in engine (`CheckinSession`): a desktop OpenCV app (`src/main.py`) and a browser-based app (`checkin_app/`, streaming the webcam as MJPEG). Both include face recognition, liveness detection (blink + head movement), single-person enforcement, the identity-liveness continuity guard, attendance logging with correct name attribution on failed attempts, duplicate detection, and per-outcome verification snapshots. The voice challenge is built as a module but is not currently part of the live flow (see [[decisions]] Decision 7). The lecturer dashboard (`dashboard/`) shows the attendance log split into Present/Attempts tabs, with a reason filter, flagged-row highlighting, per-tab summaries, and inline verification-snapshot thumbnails for each row. Only testing and refinement (Step 8) remain of the originally planned steps.
 
 ## Related Documentation
 - [[roadmap]]

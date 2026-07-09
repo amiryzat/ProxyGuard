@@ -51,18 +51,39 @@ MULTI_FACE_MESSAGE_LINES = [
 # in an unregistered face (or a photo/phone screen) and still pass the
 # challenge under the first identity. See CheckinSession._update_identity_continuity.
 #
-# Tolerated consecutive recognition checks (every 3rd raw frame) where the
-# single detected face doesn't match the already-active identity/location,
-# before the identity is cleared and the challenge restarts. Mirrors the
-# existing single-bad-frame anti-flicker slack (Bug 1), but bounded so a
-# swapped-in face can't ride on a stale identity indefinitely.
-IDENTITY_MISMATCH_TOLERANCE = 2
+# This prioritizes SPATIAL continuity over per-frame recognition certainty:
+# the challenge itself requires head movement, and face_recognition routinely
+# returns "Unknown" while genuinely off-angle (mid-turn) -- that must not, by
+# itself, break continuity, or the guard would punish the exact motion the
+# challenge asks for. Only three things break continuity:
+#   1. The face box jumps too far from its last tracked position (below).
+#   2. A DIFFERENT real registered name is recognized at that position
+#      (tolerated for one stray check, see DIFFERENT_NAME_TOLERANCE).
+#   3. No reconfirming match (same name) has occurred for IDENTITY_HOLD_SECONDS
+#      -- covers both "no face" and "face present but stuck on Unknown too
+#      long" with one timer, rather than a per-frame mismatch count.
 
 # Max allowed face-center shift between recognition checks, as a fraction of
 # frame width, before two face boxes are treated as different physical faces.
 # Deliberately simple (center-distance, not IoU/real tracking) -- this is an
 # academic prototype, not production biometric tracking.
 FACE_JUMP_MAX_FRACTION = 0.35
+
+# How long (wall-clock seconds) a spatially-continuous single face can go
+# without RE-matching the active identity's name before continuity is
+# considered broken. Long enough to cover a deliberate, several-second
+# off-angle hold during the 10s head-movement challenge (recognition
+# legitimately weakens off-angle); short enough that a face swapped in at the
+# same position can't ride the original identity for a whole challenge
+# window. Tuned generously toward usability -- see docs/bugs.md for the
+# accepted tradeoff.
+IDENTITY_HOLD_SECONDS = 4.0
+
+# A different REAL registered name (not "Unknown") appearing at the tracked
+# position is a strong, unambiguous signal -- tolerated for only this many
+# consecutive checks (one stray misrecognition) before clearing, unlike the
+# generous IDENTITY_HOLD_SECONDS given to plain "Unknown".
+DIFFERENT_NAME_TOLERANCE = 1
 
 CONTINUITY_WARNING_SECONDS = 2
 CONTINUITY_BROKEN_MESSAGE = "Face changed or lost, please keep the same face in frame"
@@ -205,13 +226,21 @@ class CheckinSession:
         self.locked_status = None
 
         # Identity-liveness continuity guard state (see
-        # _update_identity_continuity). active_face_box is the face location
-        # last confirmed to belong to identified_name; identity_mismatch_streak
-        # counts consecutive recognition checks where the current single face
-        # didn't match it; continuity_warning_until is a short on-screen
-        # warning window shown right after continuity breaks.
+        # _update_identity_continuity). active_face_box is the last tracked
+        # position of the bound face (updated on every spatially-close single
+        # face, even a currently-"Unknown" one, so natural head-turn drift
+        # doesn't look like a jump later). last_confirmed_time is the wall
+        # clock time of the last check where the name actually matched
+        # identified_name; different_name_streak counts consecutive checks
+        # where a DIFFERENT real name was seen; continuity_warning_until is a
+        # short on-screen warning window shown right after continuity breaks.
+        # pending_reverify is set on any multi-face frame and forces the next
+        # single-face check to be a confident match, bypassing the usual
+        # "Unknown" grace period (see _update_identity_continuity).
         self.active_face_box = None
-        self.identity_mismatch_streak = 0
+        self.last_confirmed_time = None
+        self.different_name_streak = 0
+        self.pending_reverify = False
         self.continuity_warning_until = None
 
         # flow_phase drives what's on screen after the head-movement/blink
@@ -241,29 +270,66 @@ class CheckinSession:
     def close(self):
         self.face_mesh.close()
 
+    def _clear_active_identity(self):
+        """
+        Continuity broken (spatial jump, a different real identity took over,
+        or no reconfirming match for too long) -- clear identity state and
+        restart the challenge from scratch (fresh direction + fresh timer),
+        so it must be re-earned by a continuously present, matching face
+        rather than letting a swapped-in face finish it under the old one.
+        """
+        self.identified_name = None
+        self.last_known_name = None
+        self.active_face_box = None
+        self.last_confirmed_time = None
+        self.different_name_streak = 0
+        self.pending_reverify = False
+        self.challenge.start()
+        self.continuity_warning_until = time.time() + CONTINUITY_WARNING_SECONDS
+
     def _update_identity_continuity(self, names, face_locations, frame_width):
         """
         Anti-proxy-swap guard, run pre-lock on every recognition check (every
         3rd raw frame). Recognizing a student once is not enough to bind their
-        identity to the whole attempt -- a later frame must still show the
-        SAME confidently recognized face for identified_name/last_known_name
-        to keep counting, or a swapped-in face (a phone, another person, an
-        unregistered face) could ride on the first identity for the rest of
-        the challenge. See docs/bugs.md.
+        identity to the whole attempt -- but the guard must not punish the
+        head movement the challenge itself requires, since recognition
+        legitimately weakens (often to "Unknown") while genuinely off-angle.
+        See docs/bugs.md.
 
-        - Exactly 1 face, matching name, matching (close) location -> identity
-          confirmed continuous this check; reset the mismatch streak and track
-          the face's new position.
-        - Anything else (0 faces, >1 already handled by the caller and
-          skipped here, a different name, or too large a location jump) counts
-          as a mismatch. A small number of consecutive mismatches is tolerated
-          (the same single-bad-frame slack as the original anti-flicker fix),
-          but exceeding it clears the identity and restarts the challenge, so
-          it must be re-earned by a continuously present, matching face.
+        Spatial continuity is prioritized over per-frame recognition
+        certainty for a genuinely continuous single face: once identified_name
+        is set, continuity breaks on --
+          1. The single detected face's box jumping too far from where it was
+             last seen (see _face_box_close) -> broken immediately.
+          2. A DIFFERENT real registered name recognized at that position ->
+             tolerated for one stray check (DIFFERENT_NAME_TOLERANCE), then
+             broken.
+          3. No check RE-matching the active name for more than
+             IDENTITY_HOLD_SECONDS (covers both "no face at all" and "face
+             present but stuck on Unknown too long") -> broken.
+        A plain "Unknown" result on its own does none of these -- it neither
+        jumps the box nor introduces a different name -- so a multi-second
+        off-angle hold during the head-turn/blink challenge is tolerated as
+        long as the face box keeps tracking the same position.
+
+        BUT a box position alone cannot tell a genuine off-angle turn apart
+        from a phone/photo held directly in front of (occluding) the same
+        spot -- both look like "single face, Unknown, same position". The
+        one fact that *does* distinguish them: a real head turn is a single
+        face the whole time, while a hand-off/occlusion attack (as reported)
+        passes through a multi-face frame first (the phone held beside the
+        real face) before the swap. So once a multi-face frame is seen,
+        `pending_reverify` is set, and the very next single-face check must
+        be a CONFIDENT match to the active identity to keep it -- an "Unknown"
+        or different name right after a multi-face moment is treated as the
+        swap it almost certainly is, not given the usual grace period.
         """
         if len(face_locations) > 1:
             # Multi-face frames are handled by the separate pause in
-            # process_frame (Decision 10) -- don't touch identity here.
+            # process_frame (Decision 10) -- don't touch identity/position
+            # here, but flag that whatever single face reappears next must be
+            # freshly reconfirmed before it can keep using this identity.
+            self.pending_reverify = True
             return
 
         if self.identified_name is None:
@@ -273,32 +339,54 @@ class CheckinSession:
                 self.identified_name = names[0]
                 self.last_known_name = names[0]
                 self.active_face_box = face_locations[0]
-                self.identity_mismatch_streak = 0
+                self.last_confirmed_time = time.time()
+                self.different_name_streak = 0
+                self.pending_reverify = False
             return
 
-        continuous = (
-            len(face_locations) == 1
-            and names[0] == self.identified_name
-            and _face_box_close(self.active_face_box, face_locations[0], frame_width)
-        )
+        if len(face_locations) == 1:
+            name = names[0]
+            box = face_locations[0]
 
-        if continuous:
-            self.identity_mismatch_streak = 0
-            self.last_known_name = names[0]
-            self.active_face_box = face_locations[0]
-            return
+            if self.active_face_box is not None and not _face_box_close(self.active_face_box, box, frame_width):
+                self._clear_active_identity()
+                return
 
-        self.identity_mismatch_streak += 1
-        if self.identity_mismatch_streak > IDENTITY_MISMATCH_TOLERANCE:
-            # Continuity broken -- clear the identity and restart the
-            # challenge (fresh direction + fresh timer) rather than let a
-            # swapped-in face finish the challenge under the old identity.
-            self.identified_name = None
-            self.last_known_name = None
-            self.active_face_box = None
-            self.identity_mismatch_streak = 0
-            self.challenge.start()
-            self.continuity_warning_until = time.time() + CONTINUITY_WARNING_SECONDS
+            if self.pending_reverify:
+                # Coming straight out of a multi-face frame: only a confident
+                # match to the SAME identity re-earns trust. "Unknown" or a
+                # different name here is exactly the occlusion/hand-off
+                # pattern of the reported bypass -- clear immediately, no
+                # grace period, even though the box position didn't jump.
+                if name == self.identified_name:
+                    self.pending_reverify = False
+                else:
+                    self._clear_active_identity()
+                    return
+
+            if name != "Unknown" and name != self.identified_name:
+                self.different_name_streak += 1
+                if self.different_name_streak > DIFFERENT_NAME_TOLERANCE:
+                    self._clear_active_identity()
+                return
+
+            # Same name, or "Unknown" (expected while genuinely off-angle
+            # mid-turn, and not immediately following a multi-face moment):
+            # keep tracking position so gradual head movement doesn't itself
+            # look like a jump on a later check.
+            self.active_face_box = box
+            self.different_name_streak = 0
+            if name == self.identified_name:
+                self.last_known_name = name
+                self.last_confirmed_time = time.time()
+            # else "Unknown": don't refresh last_confirmed_time -- the
+            # hold-timeout below still applies if this drags on too long.
+
+        # 0 faces (person fully out of frame) also doesn't refresh
+        # last_confirmed_time, so this timeout covers both "disappeared" and
+        # "present but unrecognized too long" with one grace window.
+        if time.time() - self.last_confirmed_time > IDENTITY_HOLD_SECONDS:
+            self._clear_active_identity()
 
     def process_frame(self, frame):
         """
@@ -469,15 +557,14 @@ class CheckinSession:
                     self.locked_status = "passed"
                     self.flow_phase = "liveness_success"
                     self.phase_start = time.time()
-                    # Only confirm under an identity that is CURRENTLY
-                    # continuous (identity_mismatch_streak == 0), not just "was
-                    # set at some point this attempt". Without this, a pass
-                    # landing during the tolerance grace window right after a
-                    # face swap could still confirm the stale identity even
-                    # though the last recognition check already didn't match
-                    # it. See _update_identity_continuity / docs/bugs.md.
-                    if self.identified_name and self.identified_name != "Unknown" \
-                            and self.identity_mismatch_streak == 0:
+                    # identified_name is only ever set/kept by
+                    # _update_identity_continuity, which clears it immediately
+                    # on a spatial jump or a different real identity, and
+                    # within IDENTITY_HOLD_SECONDS of no reconfirming match --
+                    # so if it's still set here, continuity holds by
+                    # construction; no extra check needed. See
+                    # _update_identity_continuity / docs/bugs.md.
+                    if self.identified_name and self.identified_name != "Unknown":
                         self.confirmed_name = self.identified_name
                     else:
                         self.confirmed_name = None

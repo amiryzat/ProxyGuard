@@ -16,13 +16,15 @@ A separate Flask web app in `dashboard/` provides a lecturer-facing view over th
 1. Webcam captures a live video frame.
 2. Face detection locates the face in the frame.
 3. Face recognition compares the detected face against registered student reference images.
-4. Blink detection runs continuously using MediaPipe Face Mesh.
-5. A randomized head movement challenge, requiring a real blink during the same window, verifies active physical response.
-6. On passing, a recognized face is confirmed directly; an unrecognized one ends as "not recognized".
-7. Attendance is logged with result and reason, and a verification snapshot of the frame is saved.
-8. Suspicious attendance patterns are flagged for lecturer review.
+4. **Exactly one face is required** for the challenge to run — if more than one face is detected, the challenge pauses with an on-screen warning instead of progressing (see [[decisions]] Decision 10).
+5. Once a face is recognized, an **identity-liveness continuity guard** requires later recognition checks to keep matching that same face (name + position) for the rest of the attempt, or the identity is cleared and the challenge restarts — this prevents a recognized identity from silently transferring to a swapped-in face/photo (see [[decisions]] Decision 11).
+6. Blink detection runs continuously using MediaPipe Face Mesh.
+7. A randomized head movement challenge, requiring a real blink during the same window, verifies active physical response.
+8. On passing, a recognized face is confirmed directly (only if identity continuity held to that instant); an unrecognized one ends as "not recognized".
+9. Attendance is logged with result and reason — a recognized student who fails liveness is still logged under their real name, not "Unknown" (see [[bugs]] Bug 8) — and a verification snapshot of the frame is saved.
+10. Suspicious attendance patterns are flagged for lecturer review.
 
-(The voice challenge and the mid-challenge identity re-verification that previously sat between steps 5 and 7 have been removed from the live flow — see the note under System Overview.)
+(The voice challenge and the mid-challenge identity re-verification that previously sat between steps 7 and 9 have been removed from the live flow — see the note under System Overview.)
 
 ## Main Modules
 
@@ -48,7 +50,7 @@ A separate Flask web app in `dashboard/` provides a lecturer-facing view over th
   Reads attendance logs and flags repeated failures, duplicate attempts, and clustered unrecognized attempts.
 
 - `src/main.py`  
-  Combines face recognition, liveness detection (blink + head movement), attendance logging, and per-outcome verification snapshots into one live webcam check-in flow. Before the camera loop starts, it prompts the lecturer in the terminal (via `class_config.py`) to select a class subject and week number, then builds `session_id` from them.
+  Defines `CheckinSession`, the shared check-in engine: per-frame face recognition, liveness detection (blink + head movement), single-person enforcement, the identity-liveness continuity guard, attendance logging, and per-outcome verification snapshots, all driven through one method (`process_frame()`). Both the desktop entry point (`if __name__ == "__main__"`, which also prompts the lecturer in the terminal via `class_config.py` for a class subject and week number before building `session_id`) and `checkin_app/`'s web app construct a `CheckinSession` and feed it frames — so the two entry points share the exact same detection/liveness/logging behavior and only differ in how frames are captured and displayed (OpenCV window vs. browser MJPEG stream).
 
 ## Session Identity (`session_id`)
 
@@ -67,6 +69,14 @@ Two entry points can currently build a `session_id`:
 - `src/main.py`'s terminal prompt (`prompt_session_setup()`), used by the live webcam check-in flow.
 - `checkin_app/`'s web setup page (Phase 2a — see below), which calls the same `class_config.build_session_id()` so both paths produce identically-formatted ids.
 
+## Anti-Proxy Safeguards in the Check-in Engine
+
+Beyond face recognition and the blink/head-movement liveness challenge, `CheckinSession` enforces two additional binding rules while an attempt is active (not yet locked), so both the desktop flow and `checkin_app/` get them identically:
+
+- **Single-person enforcement** — the challenge only runs with exactly one face in frame. mediapipe Face Mesh is configured for a single face, so a second face present would let one person perform the challenge while a different (possibly registered) face is also visible. If more than one face is detected, the challenge pauses (timer frozen, no mediapipe processing) and a warning is shown until only one face remains. See [[decisions]] Decision 10.
+- **Identity-liveness continuity guard** — recognizing a face once is not enough to bind that identity to the rest of the attempt. Later recognition checks must keep showing the *same* name at a *similar* position (a simple center-distance check, not real object tracking) for the identity to keep counting; a small number of consecutive mismatches is tolerated, but exceeding it clears the identity and restarts the challenge. This closes a proxy loophole where a recognized identity could silently transfer to a swapped-in face or photo. See [[decisions]] Decision 11 and [[bugs]] Bug 9.
+- **On-screen box color coding** — each detected face's bounding box is drawn red when unrecognized/`"Unknown"` and green when recognized, so an unrecognized face (including a swapped-in one, once the continuity guard clears it) is visually obvious at a glance, in both the desktop window and the `checkin_app` browser stream.
+
 ## Lecturer Dashboard (`dashboard/`)
 
 A small, standalone Flask web app that lets a lecturer review the attendance log in the browser. It is kept in its own top-level `dashboard/` folder (not inside `src/`) so it stays separate from the core detection modules, matching the project's module-independence convention.
@@ -80,16 +90,21 @@ dashboard/
 ```
 
 ### Features
-- **Attendance table** — shows the same columns as the CSV (`name`, `date`, `time`, `session_id`, `result`, `reason`), most recent entries first.
-- **Session filter** — a dropdown of all unique `session_id` values (most recent first). On first load it defaults to the most recent session rather than the whole log history; selecting another session reloads the table via a `?session=...` query parameter.
-- **Flagged row highlighting** — rows belonging to a suspicious pattern are highlighted in red.
-- **Per-session summary** — a small row of stat boxes above the table showing total attempts, successful confirmations, failed attempts, and flagged entries for the selected session only.
+- **Present / Attempts tabs** — the attendance table is split into two tabs on one page (client-side toggle, no separate routes): **Present** shows only `result=success` rows for the selected session; **Attempts** shows only `result=failed` rows. Each tab has its own summary stat boxes, computed only from that tab's currently visible rows.
+- **Session filter** — a dropdown of all unique `session_id` values (most recent first). On first load it defaults to the most recent session rather than the whole log history; selecting another session reloads the page via a `?session=...` query parameter.
+- **Reason filter (Attempts tab only)** — a dropdown scoped to the distinct `reason` values among the *selected session's* failed rows, defaulting to "All reasons". Applies on top of the session filter, not instead of it; both dropdowns live in one `<form>` so changing either resubmits both values together, and a hidden field preserves which tab was open across the reload.
+- **Inline verification snapshots** — each row in both tabs shows a small thumbnail of its matched snapshot (click to open full-size), or a "no snapshot" placeholder if none matches. See Snapshot Matching below.
+- **Flagged row highlighting** — rows belonging to a suspicious pattern are highlighted in red, in either tab.
+- **Per-tab summary** — a row of stat boxes (total / successful / failed / flagged) above each tab's table, scoped to that tab's currently filtered rows (session + reason, where applicable).
+
+### Snapshot Matching (`dashboard/app.py`)
+`find_snapshot_for_row()` reconstructs the snapshot filename prefix from a row's `session_id`, `name`, and `reason` (mirroring `build_snapshot_filename()` in `src/main.py` via a local `_slug()` helper, reimplemented rather than imported so the dashboard doesn't need to pull in `cv2`/`mediapipe`/`dlib`), and returns the file that starts with it — disambiguating same-prefix files (e.g. repeated failures) with the row's own `HH:MM:SS` time. If the strict prefix has no match, it falls back to matching on `session_id` + `reason` + the row's timestamp alone, ignoring the name segment: a failed attempt's CSV `name` and its snapshot's name segment can differ in older logs written before Bug 8's fix (the snapshot used the bad-frame-protected `last_known_name`, the CSV row used `confirmed_name`/`"Unknown"`), so the timestamp — unique per attempt — recovers the match either way. A `GET /snapshot/<filename>` route serves the matched file from `logs/snapshots/` via `send_from_directory` (path-traversal-safe).
 
 ### Reuse of `pattern_flagger.py` (no duplicated logic)
-`app.py` adds `src/` to `sys.path` and imports `pattern_flagger` directly. It calls `pattern_flagger.flag_patterns()` and reads that report (plus `pattern_flagger`'s own reason constants) to decide which visible rows are flagged — the detection logic itself is never copied or reimplemented in the dashboard. The flagged count in the summary reuses the very same per-row result, so it is not recalculated separately. Because `pattern_flagger` only depends on the standard library, importing it into the dashboard stays cheap and does not pull in OpenCV or MediaPipe.
+`app.py` adds `src/` to `sys.path` and imports `pattern_flagger` directly. It calls `pattern_flagger.flag_patterns()` and reads that report (plus `pattern_flagger`'s own reason constants) to decide which visible rows are flagged — the detection logic itself is never copied or reimplemented in the dashboard. The flagged count in each tab's summary reuses the very same per-row result, so it is not recalculated separately. Because `pattern_flagger` only depends on the standard library, importing it into the dashboard stays cheap and does not pull in OpenCV or MediaPipe.
 
 ### Data flow
-The dashboard reads `logs/attendance.csv` (written by `attendance_logger.py`) **read-only** — it never writes to or modifies the log. It resolves the log path relative to its own location, mirroring `attendance_logger.py`, so it finds the same file regardless of the working directory.
+The dashboard reads `logs/attendance.csv` (written by `attendance_logger.py`) and `logs/snapshots/` **read-only** — it never writes to or modifies either. It resolves both paths relative to its own location, mirroring `attendance_logger.py`, so it finds the same files regardless of the working directory.
 
 ### How to run
 ```
@@ -139,11 +154,11 @@ Then open `http://127.0.0.1:5002/` in a browser. Port 5002 is used to avoid clas
 
 ## Verification Snapshots
 
-At every terminal check-in outcome (`confirmed`, `not_recognized`, `liveness_failed`; `identity_mismatch` is retained as a terminal state but is currently unreachable now that the voice listening phase is gone), `src/main.py` saves a snapshot of the webcam frame to `logs/snapshots/` (created automatically if missing), at the same moment attendance is logged for that outcome.
+At every terminal check-in outcome (`confirmed`, `not_recognized`, `liveness_failed`; `identity_mismatch` is retained as a terminal state but is currently unreachable now that the voice listening phase is gone), `CheckinSession` saves a snapshot of the webcam frame to `logs/snapshots/` (created automatically if missing), at the same moment attendance is logged for that outcome. Both the desktop flow and `checkin_app/` write to the same folder in the same format, since both drive the same `CheckinSession`.
 
 - **Every outcome is captured, successes included** — not just failures. Because a check-in can pass the liveness checks and still be a photo of someone else held up to the camera, the saved image gives a lecturer a way to manually verify the actual face after the fact.
-- **A pre-overlay frame is saved.** `main.py` keeps an un-annotated copy of each frame taken before any bounding boxes or status text are drawn, so the face in the snapshot is unobstructed.
-- **File naming** combines the `session_id`, the identity (`confirmed_name` if recognized, otherwise `unknown`), the outcome reason, and an `HHMMSS` timestamp, e.g. `2026-07-07_0900_CSC649_Week3_unknown_liveness_timeout_171322.jpg` (the `session_id` portion now includes the class code and week per the Phase 1 format above). The timestamp keeps multiple check-ins within one session from overwriting each other.
+- **A pre-overlay frame is saved.** `CheckinSession` keeps an un-annotated copy of each frame taken before any bounding boxes or status text are drawn, so the face in the snapshot is unobstructed.
+- **File naming** combines the `session_id`, the identity (`last_known_name` — the bad-frame-protected last confidently recognized identity — if one was established this attempt, otherwise `unknown`), the outcome reason as actually written to the CSV (not the pre-duplicate-downgrade reason, see [[bugs]] Bug 4), and an `HHMMSS` timestamp, e.g. `2026-07-07_0900_CSC649_Week3_unknown_liveness_timeout_171322.jpg` (the `session_id` portion now includes the class code and week per the Phase 1 format above). The timestamp keeps multiple check-ins within one session from overwriting each other. The attendance CSV row uses the same fallback logic (`confirmed_name` on success, else `last_known_name`, else `"Unknown"` — see [[bugs]] Bug 8), so a recognized student who fails liveness has their real name in both the snapshot filename and the CSV row, not just the former.
 
 Snapshots are a manual review aid only; the system never uses them to auto-accept or auto-reject a check-in.
 

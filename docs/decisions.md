@@ -121,7 +121,7 @@ Build the student-facing check-in setup page as its own standalone Flask app in 
 `checkin_app/` needs to build `session_id` using the exact same format established in Phase 1 (Decision 8), so a session started from the web setup page is indistinguishable in format from one started via the terminal. Reusing it by importing `src/main.py` directly would have pulled in `cv2` and `mediapipe` (plus executed `main.py`'s module-level setup, e.g. `random.seed(os.urandom(8))`) purely to reach one string-building function. `class_config.py` was already a standalone, dependency-free config module by design (see Decision 8), so moving `build_session_id()` there gives both the terminal flow and the new web app a single lightweight source of truth for the `session_id` format, matching the project's existing module-independence convention (mirroring how `dashboard/` already reuses `pattern_flagger.py` without duplicating its logic). `src/main.py`'s terminal flow is otherwise unchanged — it now imports the function from `class_config` instead of defining it locally.
 
 ### Status
-Accepted (Phase 2a — setup page only). Camera streaming and the live check-in flow for `checkin_app/` are Phase 2b and not yet built.
+Accepted (Phase 2a). Phase 2b (camera streaming and the live check-in flow for `checkin_app/`, reusing the shared `CheckinSession` engine from `src/main.py`) is now also built — see [[architecture]] and [[roadmap]].
 
 ---
 
@@ -132,6 +132,19 @@ While a check-in attempt is active (not yet locked), require exactly one detecte
 
 ### Reason
 The liveness challenge binds "a real, present, responsive person" to the recognized identity, but mediapipe Face Mesh is configured `max_num_faces=1`, so blink and head-pose are only ever evaluated for a single face. With two faces in frame, one person could perform the head movement and blink while a different person's (e.g. a registered student's) face is also present, letting the challenge pass without the challenged actions actually coming from the identified person — a direct hole in the proxy-detection the project exists to provide. Detecting more than one face is already cheap (`recognize_face` returns all face locations), so gating the challenge on a single face closes the gap without new dependencies. The countdown is frozen rather than failed during the interruption so a legitimate solo student isn't penalized for someone briefly passing behind them. This lives in the shared `CheckinSession.process_frame`, so both the desktop flow and `checkin_app/` enforce it identically. See docs/bugs.md (Bug 5).
+
+### Status
+Accepted.
+
+---
+
+## Decision 11: Bind a recognized identity to a single continuous face for the rest of the liveness challenge
+
+### Decision
+Once a face is confidently recognized during an active check-in attempt, later recognition checks must keep matching that same name *and* stay spatially close to the last confirmed face position (center-distance within 35% of frame width) for the identity to keep counting. Up to 2 consecutive mismatched checks are tolerated before the identity is cleared and the challenge restarts from scratch; a challenge can only be confirmed under an identity when continuity is intact at that exact instant (`identity_mismatch_streak == 0`), not merely "was recognized at some earlier point this attempt."
+
+### Reason
+The liveness challenge's pass/fail signal (blink + head-pose) is computed from whatever face is currently in frame, with no awareness of identity — the two were only ever connected through `identified_name`, which previously updated but never cleared. That let a student get recognized once, then swap in a different face (an unregistered face, another student's photo, or a phone screen) and still pass the challenge under the first identity — a direct proxy loophole (see [[bugs]] Bug 9). Requiring the *same* name at a *similar* position closes this without real object tracking, which would be disproportionate for an academic prototype: a simple center-distance check plus a small tolerance for single-frame misdetections (matching the existing anti-flicker philosophy from Bug 1) is enough to defeat a deliberate face swap while not penalizing normal head movement or a stray bad frame. This is intentionally conservative rather than a full "fail the whole attempt" response — clearing the identity and restarting the challenge in place lets a legitimate student who was briefly occluded simply re-present their face, while a swapped-in face can never ride the earlier recognition to a confirmed check-in. Lives in the shared `CheckinSession.process_frame`, so both the desktop flow and `checkin_app/` enforce it identically.
 
 ### Status
 Accepted.
