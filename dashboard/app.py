@@ -12,10 +12,13 @@
 # later phases.
 
 import csv
+import io
 import os
+import re
 import sys
+from datetime import datetime
 
-from flask import Flask, render_template, request, send_from_directory, abort
+from flask import Flask, render_template, request, send_from_directory, abort, jsonify, Response
 
 # Make the core detection modules in src/ importable so we can reuse the
 # existing flagging logic instead of duplicating it here. pattern_flagger
@@ -42,11 +45,27 @@ SNAPSHOT_DIR = os.path.join(SCRIPT_DIR, "..", "logs", "snapshots")
 # Column order matches the CSV schema written by attendance_logger.py.
 CSV_HEADERS = ["name", "date", "time", "session_id", "result", "reason"]
 
-# Auto-refresh interval (seconds), already implemented as a client-side
-# setInterval reload in index.html. Defined once here and passed into the
-# template so the "Auto-refresh every Xs" label can never drift out of sync
-# with the actual reload timer -- both read this single value.
+# Poll interval (seconds) for the smart-refresh check (Phase D5). Defined
+# once here and passed into the template so the "checking every Xs" label can
+# never drift out of sync with the actual poll timer -- both read this value.
 REFRESH_SECONDS = 7
+
+
+def get_attendance_version():
+    """
+    Cheap change-detection signal for Phase D5 smart refresh: the CSV's
+    mtime + size. Every terminal check-in outcome appends exactly one row to
+    this file (see CheckinSession in src/main.py) and saves its snapshot in
+    the same moment, so "has the CSV changed" is a reliable proxy for "is
+    there new attendance/snapshot data" without needing to separately stat
+    logs/snapshots/ or hash the file contents. Returns a stable placeholder
+    if the log doesn't exist yet, so /status and index() never see an
+    exception from a session with no check-ins yet.
+    """
+    if not os.path.exists(LOG_PATH):
+        return "no-log"
+    stat = os.stat(LOG_PATH)
+    return f"{stat.st_mtime_ns}-{stat.st_size}"
 
 
 def _slug(text):
@@ -273,6 +292,81 @@ def build_session_analytics(display_rows):
     }
 
 
+def resolve_selected_session(sessions):
+    """
+    ?session=... if it names a real session, else the most recent one (or
+    None if there are no sessions yet). Shared by index() and export_csv()
+    so the two routes can never disagree about what "no ?session=" means.
+    """
+    selected_session = request.args.get("session")
+    if selected_session not in sessions:
+        selected_session = sessions[0] if sessions else None
+    return selected_session
+
+
+def build_session_display_rows(rows, selected_session):
+    """
+    display_rows (cells + flagged + snapshot) for one session -- shared by
+    index() and export_csv() (Phase D6) so the on-page table and the CSV
+    export are always built from the exact same flagging/snapshot-matching
+    logic, not a second, potentially-drifting copy of it.
+    """
+    filtered_rows = [r for r in rows if r.get("session_id") == selected_session]
+    report = pattern_flagger.flag_patterns(LOG_PATH)
+    snapshot_files = list_snapshot_files()
+    return [
+        {
+            "cells": r,
+            "flagged": is_row_flagged(r, report),
+            "snapshot": find_snapshot_for_row(r, snapshot_files),
+        }
+        for r in filtered_rows
+    ]
+
+
+def matches_quick_filter(display_row, quick_filter):
+    """
+    Server-side mirror of rowMatchesQuickFilter() in dashboard.js (Phase D6
+    export). A CSV download is a fresh request, not a DOM read, so the same
+    small set of predicates is reimplemented here rather than shared code --
+    kept in lockstep by using the exact same fields/reason constants the
+    client-side version and build_session_analytics() already use.
+    """
+    result = display_row["cells"].get("result")
+    if quick_filter == "success":
+        return result == "success"
+    if quick_filter == "failed":
+        return result == "failed"
+    if quick_filter == "flagged":
+        return display_row["flagged"]
+    if quick_filter == "unknown":
+        return display_row["cells"].get("name") == "Unknown" \
+            or display_row["cells"].get("reason") == pattern_flagger.NOT_RECOGNIZED_REASON
+    if quick_filter == "duplicate":
+        return display_row["cells"].get("reason") == pattern_flagger.DUPLICATE_REASON
+    if quick_filter == "liveness":
+        return "liveness" in (display_row["cells"].get("reason") or "").lower()
+    return True  # "all" (or an unrecognized value) -- no filtering
+
+
+SESSION_ID_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{4}_(?P<code>[A-Za-z0-9]+)_Week(?P<week>\d+)$")
+
+
+def build_export_filename(session_id, tab):
+    """
+    proxyguard_<CODE>_Week<N>_<tab>_<today>.csv when session_id matches the
+    class_config.build_session_id() format -- best-effort regex, not a hard
+    dependency on that format, since session_id is otherwise treated as an
+    opaque string throughout this project (see docs/architecture.md). Falls
+    back to the session_id verbatim when it doesn't match, per the spec's
+    own fallback.
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    match = SESSION_ID_PATTERN.match(session_id or "")
+    base = f"{match.group('code')}_Week{match.group('week')}" if match else (session_id or "unknown_session")
+    return f"proxyguard_{base}_{tab}_{today}.csv"
+
+
 @app.route("/")
 def index():
     rows = read_attendance_rows()
@@ -281,29 +375,13 @@ def index():
     # Default to the most recent session on first load (no ?session=... yet),
     # rather than dumping the entire log history. Fall back to the most
     # recent session too if the requested one isn't found.
-    selected_session = request.args.get("session")
-    if selected_session not in sessions:
-        selected_session = sessions[0] if sessions else None
-
-    # Rows are already newest-first; filtering preserves that order within
-    # the selected session.
-    filtered_rows = [r for r in rows if r.get("session_id") == selected_session]
+    selected_session = resolve_selected_session(sessions)
 
     # Reuse the existing flagging logic from src/pattern_flagger.py to mark
     # which visible rows are part of a suspicious pattern. Each display row
     # carries its raw cells plus a `flagged` flag the template uses to
     # highlight it; the underlying columns/order are unchanged.
-    report = pattern_flagger.flag_patterns(LOG_PATH)
-    # List the snapshot folder once, then match each visible row to its file.
-    snapshot_files = list_snapshot_files()
-    display_rows = [
-        {
-            "cells": r,
-            "flagged": is_row_flagged(r, report),
-            "snapshot": find_snapshot_for_row(r, snapshot_files),
-        }
-        for r in filtered_rows
-    ]
+    display_rows = build_session_display_rows(rows, selected_session)
 
     # Phase B: split the session's rows into the two tabs by `result`, rather
     # than showing one combined table. attendance_logger.py's `result` column
@@ -362,12 +440,70 @@ def index():
         session_analytics=session_analytics,
         reason_breakdown=reason_breakdown,
         refresh_seconds=REFRESH_SECONDS,
+        # Phase D5: the version this page was rendered with, so dashboard.js
+        # has a baseline to compare each /status poll against without an
+        # extra round trip on load.
+        attendance_version=get_attendance_version(),
         # Phase D4: passed through so render_table can tag each row with a
         # data-unknown/data-duplicate attribute for the client-side quick
         # filters, reusing these constants instead of hardcoding the reason
         # strings a second time in the template.
         not_recognized_reason=pattern_flagger.NOT_RECOGNIZED_REASON,
         duplicate_reason=pattern_flagger.DUPLICATE_REASON,
+    )
+
+
+@app.route("/status")
+def status():
+    """
+    Lightweight JSON endpoint (Phase D5) for dashboard.js to poll instead of
+    blindly reloading the whole page every REFRESH_SECONDS. Cheap: a single
+    os.stat() call, no CSV parsing, no pattern_flagger run.
+    """
+    return jsonify({"version": get_attendance_version()})
+
+
+@app.route("/export.csv")
+def export_csv():
+    """
+    Server-side CSV export (Phase D6) mirroring exactly what the lecturer is
+    currently looking at: session (?session=, same param the dashboard table
+    uses), tab (?tab=present/attempts -> result success/failed), and the
+    same search/quick-filter predicates dashboard.js applies client-side
+    (?search=, ?quick_filter=). Reimplemented server-side rather than reading
+    the DOM, since a file download is a fresh request with no client-side row
+    list to hand over -- see build_session_display_rows()/
+    matches_quick_filter() above, shared with index() and dashboard.js.
+    """
+    rows = read_attendance_rows()
+    sessions = unique_sessions(rows)
+    selected_session = resolve_selected_session(sessions)
+
+    tab = request.args.get("tab") or "present"
+    if tab not in ("present", "attempts"):
+        tab = "present"
+    search = (request.args.get("search") or "").strip().lower()
+    quick_filter = request.args.get("quick_filter") or "all"
+
+    display_rows = build_session_display_rows(rows, selected_session)
+    wanted_result = "success" if tab == "present" else "failed"
+    export_rows = [
+        d for d in display_rows
+        if d["cells"].get("result") == wanted_result
+        and (not search or search in (d["cells"].get("name") or "").lower())
+        and matches_quick_filter(d, quick_filter)
+    ]
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(CSV_HEADERS + ["snapshot"])
+    for d in export_rows:
+        writer.writerow([d["cells"].get(header, "") for header in CSV_HEADERS] + [d["snapshot"] or ""])
+
+    return Response(
+        buffer.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{build_export_filename(selected_session, tab)}"'},
     )
 
 

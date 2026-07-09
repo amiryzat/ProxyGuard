@@ -1,272 +1,547 @@
-/* Minimal styling for readability only -- no theming in Phase 1. */
+/* ProxyGuard Lecturer Dashboard
+   UI Refinement Phase 1 -- visual system per docs/ui-references/DESIGN.md
+   ("clinical blueprint on frosted paper" / shadcn-style monochrome).
+   Behavior/markup structure is unchanged from prior phases; this file only
+   restyles existing classes plus a handful of new layout wrapper classes. */
+
+:root {
+    /* Colors */
+    --color-canvas: #f5f5f5;
+    --color-paper: #ffffff;
+    --color-surface-alt: #fafafa;
+    --color-ink: #0a0a0a;
+    --color-ink-soft: #171717;
+    --color-mid-gray: #737373;
+    --color-hairline: #e5e5e5;
+    --color-ember: #e7000b;
+
+    /* Typography */
+    --font-geist: 'Geist', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+
+    /* Spacing */
+    --spacing-4: 4px;
+    --spacing-8: 8px;
+    --spacing-12: 12px;
+    --spacing-16: 16px;
+    --spacing-20: 20px;
+    --spacing-24: 24px;
+    --spacing-48: 48px;
+
+    /* Radius */
+    --radius-cards: 24px;
+    --radius-small: 6px;
+    --radius-nested: 10px;
+    --radius-badges: 18px;
+    --radius-inputs: 18px;
+    --radius-buttons: 18px;
+
+    /* Shadow */
+    --shadow-subtle: 0 0 0 1px rgba(23, 23, 23, 0.05), 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px -1px rgba(0, 0, 0, 0.1);
+
+    /* Layout */
+    --page-max-width: 1280px;
+}
+
+*, *::before, *::after {
+    box-sizing: border-box;
+}
+
 body {
-    font-family: Arial, Helvetica, sans-serif;
-    margin: 2rem;
-    color: #222;
+    font-family: var(--font-geist);
+    font-size: 14px;
+    line-height: 1.43;
+    margin: 0;
+    padding: var(--spacing-48) var(--spacing-24);
+    background: var(--color-canvas);
+    color: var(--color-ink);
 }
-h1 {
-    font-size: 1.5rem;
+
+/* ---- Page shell ------------------------------------------------------- */
+
+.page-container {
+    max-width: var(--page-max-width);
+    margin: 0 auto;
 }
-table {
-    border-collapse: collapse;
-    width: 100%;
-    margin-top: 1rem;
+
+.page-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--spacing-16);
+    flex-wrap: wrap;
 }
-th, td {
-    border: 1px solid #ccc;
-    padding: 8px 12px;
-    text-align: left;
+
+.page-title {
+    font-size: 30px;
+    font-weight: 600;
+    line-height: 1.2;
+    letter-spacing: -0.75px;
+    margin: 0;
+    color: var(--color-ink);
 }
-th {
-    background: #f2f2f2;
+
+.live-caption {
+    margin: var(--spacing-8) 0 0;
+    font-size: 12px;
+    color: var(--color-mid-gray);
 }
-tr:nth-child(even) td {
-    background: #fafafa;
-}
-/* Highlight rows that pattern_flagger.py flagged as suspicious
-   (repeated failures, duplicate attempts, unrecognized clusters).
-   Uses !important so it wins over the zebra-striping rule above. */
-tr.flagged td {
-    background: #ffd6d6 !important;
-}
-.empty {
-    margin-top: 1rem;
-    color: #666;
-}
+
+/* ---- Cards & sections --------------------------------------------------
+   Card = white surface, 24px radius, hairline border, subtle shadow, 20px
+   padding. Used for Session Overview, Reason Breakdown, and the table. */
+
 .filter {
-    margin-top: 1rem;
+    margin-top: var(--spacing-24);
 }
+
 .filter label {
-    margin-right: 0.5rem;
-}
-/* Stat boxes, now used only by the Session Overview cards (Phase D1)
-   -- the old per-tab mini summary section (Phase B/4) was removed in
-   Phase D2 to avoid two overlapping summary sections. */
-.stat-box {
-    border: 1px solid #ccc;
-    border-radius: 4px;
-    padding: 0.75rem 1rem;
-    min-width: 6rem;
-    background: #f7f7f7;
-}
-.stat-value {
-    font-size: 1.5rem;
-    font-weight: bold;
-}
-.stat-label {
-    font-size: 0.85rem;
-    color: #555;
-}
-/* Inline verification-snapshot thumbnail in each attendance row. */
-.snapshot-thumb {
-    height: 56px;
-    width: auto;
-    border: 1px solid #ccc;
-    border-radius: 3px;
     display: block;
+    margin: 0 0 var(--spacing-8);
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--color-mid-gray);
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
 }
-.no-snapshot {
-    color: #999;
-    font-size: 0.85rem;
-    font-style: italic;
+
+.analytics {
+    margin-top: var(--spacing-24);
+    background: var(--color-paper);
+    border: 1px solid var(--color-hairline);
+    border-radius: var(--radius-cards);
+    box-shadow: var(--shadow-subtle);
+    padding: var(--spacing-20);
 }
-/* Phase B: Present / Attempts tabs on the same page. */
-.tabs {
-    margin-top: 1.5rem;
-    border-bottom: 1px solid #ccc;
+
+.analytics h2 {
+    margin: 0 0 var(--spacing-16);
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--color-ink);
 }
-.tab-button {
-    font: inherit;
-    font-size: 1rem;
-    padding: 0.5rem 1rem;
-    margin-right: 0.25rem;
-    border: 1px solid #ccc;
-    border-bottom: none;
-    border-radius: 4px 4px 0 0;
-    background: #f2f2f2;
-    color: #222;
-    cursor: pointer;
+
+/* ---- Stat Block (Session Overview) ------------------------------------
+   Per DESIGN.md's Stat Block component: no card chrome of its own (the
+   surrounding .analytics card already provides it) -- uppercase muted
+   label, large strong value, typographic scale only. */
+
+.analytics-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--spacing-24);
+}
+
+.stat-box {
+    min-width: 8rem;
+}
+
+.stat-value {
+    font-size: 30px;
+    font-weight: 600;
+    line-height: 1.2;
+    letter-spacing: -0.5px;
+    color: var(--color-ink);
+}
+
+.stat-label {
+    margin-top: var(--spacing-4);
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--color-mid-gray);
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+}
+
+/* Monochrome-first: "good" stays plain ink (success is the expected,
+   unremarkable state). "warn" gets weight/tone but no hue. "bad" is the one
+   place this dashboard uses the reserved destructive red. */
+.stat-value.good {
+    color: var(--color-ink);
+}
+.stat-value.warn {
+    color: var(--color-mid-gray);
+}
+.stat-value.bad {
+    color: var(--color-ember);
+}
+
+/* ---- Reason Breakdown --------------------------------------------------
+   Simple CSS-only bars, monochromatic: dark fill for the routine/confirmed
+   outcome, mid-gray for a lesser concern, ember red reserved for the
+   liveness/failure-adjacent tier. */
+
+.reason-bars {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-8);
+}
+
+.reason-bar-row {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-12);
+}
+
+.reason-bar-label {
+    width: 14rem;
+    flex-shrink: 0;
+    font-size: 13px;
+    color: var(--color-ink);
+}
+
+.reason-bar-track {
+    flex: 1;
+    background: var(--color-canvas);
+    border-radius: var(--radius-small);
+    height: 8px;
+    overflow: hidden;
+}
+
+.reason-bar-fill {
+    height: 100%;
+    border-radius: var(--radius-small);
+}
+.reason-bar-fill.good { background: var(--color-ink-soft); }
+.reason-bar-fill.warn { background: var(--color-mid-gray); }
+.reason-bar-fill.bad  { background: var(--color-ember); }
+
+.reason-bar-count {
+    width: 2rem;
+    text-align: right;
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--color-ink);
+}
+
+/* ---- Table controls: search + export ----------------------------------- */
+
+.table-controls {
+    margin-top: var(--spacing-24);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--spacing-12);
+}
+
+/* Input Field component: canvas-tone fill, visible hairline border at rest
+   (not just on focus -- an all-transparent border read as "floating" text
+   with no field edge), 18px radius, 14px body text. */
+.search-wrap {
     position: relative;
-    top: 1px;
+    display: inline-flex;
+    align-items: center;
 }
+.search-input {
+    font-family: inherit;
+    font-size: 14px;
+    padding: 8px 32px 8px 10px;
+    min-width: 16rem;
+    max-width: 100%;
+    background: var(--color-canvas);
+    border: 1px solid var(--color-hairline);
+    border-radius: var(--radius-inputs);
+    color: var(--color-ink);
+}
+.search-input::placeholder {
+    color: var(--color-mid-gray);
+}
+.search-input:focus {
+    outline: none;
+    background: var(--color-paper);
+    border-color: var(--color-mid-gray);
+}
+
+/* Clear (x) button, shown only once the search field has text (toggled in
+   dashboard.js), sits inside the input's own padding so it never overlaps
+   the typed text. */
+.search-clear-btn {
+    display: none;
+    position: absolute;
+    right: 8px;
+    width: 18px;
+    height: 18px;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--color-mid-gray);
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0;
+}
+.search-clear-btn:hover {
+    background: var(--color-hairline);
+    color: var(--color-ink);
+}
+.search-clear-btn.visible {
+    display: flex;
+}
+
+/* Outline Button: transparent fill, hairline border -- tertiary action. */
+.export-btn {
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    padding: 8px 16px;
+    border: 1px solid var(--color-hairline);
+    border-radius: var(--radius-buttons);
+    background: transparent;
+    color: var(--color-ink);
+    cursor: pointer;
+}
+.export-btn:hover {
+    background: var(--color-surface-alt);
+}
+
+select#session {
+    font-family: inherit;
+    font-size: 14px;
+    padding: 8px 10px;
+    background: var(--color-canvas);
+    border: 1px solid var(--color-hairline);
+    border-radius: var(--radius-inputs);
+    color: var(--color-ink);
+    min-width: 18rem;
+    max-width: 100%;
+}
+select#session:focus {
+    outline: none;
+    background: var(--color-paper);
+    border-color: var(--color-mid-gray);
+}
+
+/* noscript fallback submit buttons -- Outline Button, same as Export. */
+form button[type="submit"] {
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    padding: 8px 16px;
+    border: 1px solid var(--color-hairline);
+    border-radius: var(--radius-buttons);
+    background: transparent;
+    color: var(--color-ink);
+    cursor: pointer;
+}
+
+/* ---- Tabs --------------------------------------------------------------
+   Segmented-control treatment: canvas-tone track, active tab lifts onto a
+   white pill with a subtle shadow (the dark-on-light-adjacent inversion is
+   the only chromatic interaction the system allows). */
+
+.tabs {
+    margin-top: var(--spacing-24);
+    display: inline-flex;
+    gap: 2px;
+    background: var(--color-canvas);
+    border-radius: var(--radius-buttons);
+    padding: 3px;
+}
+
+.tab-button {
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    padding: 7px 16px;
+    border: none;
+    border-radius: calc(var(--radius-buttons) - 3px);
+    background: transparent;
+    color: var(--color-mid-gray);
+    cursor: pointer;
+}
+
 .tab-button.active {
-    background: #fff;
-    font-weight: bold;
-    border-bottom: 1px solid #fff;
+    background: var(--color-paper);
+    color: var(--color-ink);
+    box-shadow: var(--shadow-subtle);
 }
+
 .tab-panel {
     display: none;
 }
 .tab-panel.active {
     display: block;
 }
-/* Phase D4: search box (shared) + quick filter chips (Attempts tab only). */
-.table-controls {
-    margin-top: 1rem;
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.75rem;
-}
-.search-input {
-    padding: 6px 10px;
-    min-width: 16rem;
-    max-width: 100%;
-    border: 1px solid #ccc;
-    border-radius: 4px;
-}
+
+/* ---- Quick filter chips (Badge component, Attempts tab only) ---------- */
+
 .quick-filters {
-    margin-top: 1rem;
+    margin-top: var(--spacing-16);
     display: flex;
     flex-wrap: wrap;
-    gap: 0.4rem;
+    gap: var(--spacing-8);
 }
+
+/* Badge -- Outline at rest: transparent, hairline border. */
 .quick-filter-btn {
-    font: inherit;
-    font-size: 0.85rem;
-    padding: 0.3rem 0.7rem;
-    border: 1px solid #ccc;
-    border-radius: 999px;
-    background: #f2f2f2;
-    color: #222;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 5px 12px;
+    border: 1px solid var(--color-hairline);
+    border-radius: var(--radius-badges);
+    background: transparent;
+    color: var(--color-ink);
     cursor: pointer;
 }
+
+/* Badge -- Solid when active: dark fill inversion, no color. */
 .quick-filter-btn.active {
-    background: #2e6da4;
-    border-color: #2e6da4;
-    color: #fff;
+    background: var(--color-ink-soft);
+    border-color: var(--color-ink-soft);
+    color: var(--color-surface-alt);
 }
-/* Phase D1: live monitoring indicator near the title. */
-.live-status {
-    margin-top: 0.25rem;
-    font-size: 0.85rem;
-    color: #555;
-}
-.live-dot {
-    display: inline-block;
-    width: 0.5rem;
-    height: 0.5rem;
-    border-radius: 50%;
-    background: #2e9e4a;
-    margin-right: 0.4rem;
-}
-/* Phase D1: session-wide analytics cards, reusing the .stat-box look
-   but in their own grid so they read as one "session overview" block
-   distinct from the per-tab summaries below the tabs. */
-.analytics {
-    margin-top: 1rem;
-}
-.analytics h2 {
-    font-size: 1.05rem;
-    margin-bottom: 0.5rem;
-}
-.analytics-grid {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.75rem;
-}
-.analytics-grid .stat-box {
-    min-width: 8rem;
-}
-/* Subtle color indicators -- value only, boxes stay neutral. */
-.stat-value.good { color: #2e9e4a; }
-.stat-value.warn { color: #b8860b; }
-.stat-value.bad { color: #b00000; }
-/* Phase D2: reason breakdown -- simple CSS-only horizontal bars, one
-   row per distinct reason in the selected session, sorted by count. */
-.reason-bars {
-    display: flex;
-    flex-direction: column;
-    gap: 0.4rem;
-}
-.reason-bar-row {
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-}
-.reason-bar-label {
-    width: 14rem;
-    flex-shrink: 0;
-    font-size: 0.9rem;
-}
-.reason-bar-track {
-    flex: 1;
-    background: #eee;
-    border-radius: 3px;
-    height: 0.9rem;
+
+/* ---- Attendance table --------------------------------------------------
+   Wrapped in .table-card (added in index.html) so the 24px radius clips
+   cleanly -- border-collapse tables don't clip their own radius. */
+
+.table-card {
+    margin-top: var(--spacing-16);
+    background: var(--color-paper);
+    border: 1px solid var(--color-hairline);
+    border-radius: var(--radius-cards);
+    box-shadow: var(--shadow-subtle);
     overflow: hidden;
 }
-.reason-bar-fill {
-    height: 100%;
-    border-radius: 3px;
+
+table {
+    border-collapse: collapse;
+    width: 100%;
 }
-.reason-bar-fill.good { background: #2e9e4a; }
-.reason-bar-fill.warn { background: #d9a441; }
-.reason-bar-fill.bad { background: #c0392b; }
-.reason-bar-count {
-    width: 2rem;
-    text-align: right;
-    font-weight: bold;
-    font-size: 0.9rem;
+
+th, td {
+    border-bottom: 1px solid var(--color-hairline);
+    padding: 12px var(--spacing-20);
+    text-align: left;
+    font-size: 13px;
 }
-/* Phase D3: snapshot preview modal. */
-.snapshot-link { cursor: zoom-in; }
+
+th {
+    background: var(--color-surface-alt);
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--color-mid-gray);
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    border-bottom: 1px solid var(--color-hairline);
+}
+
+tbody tr:last-child td {
+    border-bottom: none;
+}
+
+td {
+    color: var(--color-ink);
+}
+
+/* Flagged rows: a soft red background tint only -- no vertical accent bar.
+   The destructive red is used sparingly, just enough to read as "notable"
+   without becoming a decorative stripe. */
+tr.flagged td {
+    background: rgba(231, 0, 11, 0.04);
+}
+
+.empty {
+    margin: 0;
+    padding: var(--spacing-20);
+    color: var(--color-mid-gray);
+    font-size: 13px;
+}
+
+.snapshot-thumb {
+    height: 48px;
+    width: auto;
+    border: 1px solid var(--color-hairline);
+    border-radius: var(--radius-small);
+    display: block;
+}
+
+.no-snapshot {
+    color: var(--color-mid-gray);
+    font-size: 12px;
+    font-style: italic;
+}
+
+.snapshot-link {
+    cursor: zoom-in;
+}
+
+/* ---- Snapshot preview modal --------------------------------------------
+   Dark translucent overlay, white rounded Card, visible header row with a
+   Close button so it never overlaps the image. */
+
 .modal-overlay {
     display: none;
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.6);
+    background: rgba(10, 10, 10, 0.6);
     align-items: center;
     justify-content: center;
     z-index: 100;
+    padding: var(--spacing-24);
 }
+
 .modal-overlay.open {
     display: flex;
 }
+
 .modal-content {
-    background: #fff;
-    border-radius: 6px;
-    padding: 1rem;
+    background: var(--color-paper);
+    border: 1px solid var(--color-hairline);
+    border-radius: var(--radius-cards);
+    box-shadow: var(--shadow-subtle);
+    padding: var(--spacing-20);
     max-width: min(90vw, 40rem);
     max-height: 90vh;
     overflow-y: auto;
-    position: relative;
 }
+
 .modal-header {
     display: flex;
     justify-content: flex-end;
-    margin-bottom: 0.5rem;
+    margin-bottom: var(--spacing-12);
 }
+
+/* Outline Button, same family as Export CSV. */
 .modal-close {
-    font-size: 0.9rem;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 500;
     line-height: 1;
-    background: #f2f2f2;
-    border: 1px solid #ccc;
-    border-radius: 4px;
-    padding: 0.35rem 0.75rem;
+    background: transparent;
+    border: 1px solid var(--color-hairline);
+    border-radius: var(--radius-buttons);
+    padding: 7px 14px;
     cursor: pointer;
-    color: #222;
+    color: var(--color-ink);
 }
 .modal-close:hover {
-    background: #e6e6e6;
+    background: var(--color-surface-alt);
 }
+
 .modal-content img {
     max-width: 100%;
     max-height: 60vh;
     display: block;
-    margin: 0 auto 1rem;
-    border-radius: 4px;
+    margin: 0 auto var(--spacing-16);
+    border-radius: var(--radius-nested);
+    border: 1px solid var(--color-hairline);
 }
+
 .modal-details {
     display: grid;
     grid-template-columns: auto 1fr;
-    gap: 0.25rem 0.75rem;
-    font-size: 0.9rem;
+    gap: 6px var(--spacing-12);
+    font-size: 13px;
+    margin: 0;
 }
 .modal-details dt {
-    font-weight: bold;
-    color: #555;
+    font-weight: 500;
+    color: var(--color-mid-gray);
 }
 .modal-details dd {
     margin: 0;
+    color: var(--color-ink);
 }

@@ -6,11 +6,12 @@
     <title>ProxyGuard Attendance</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
 </head>
-<body data-refresh-seconds="{{ refresh_seconds }}">
-    <h1>ProxyGuard Attendance Log</h1>
-    <div class="live-status">
-        <span class="live-dot"></span>Live monitoring &mdash; auto-refresh every {{ refresh_seconds }}s &mdash; Last updated: <span id="last-updated"></span>
-    </div>
+<body data-refresh-seconds="{{ refresh_seconds }}" data-attendance-version="{{ attendance_version }}">
+    <div class="page-container">
+    <header class="page-header">
+        <h1 class="page-title">ProxyGuard Attendance</h1>
+    </header>
+    <p class="live-caption">Last updated: <span id="last-updated"></span></p>
 
     {# Phase C: one form wraps the session filter, the tab state, and the
        Attempts-only reason filter, so changing either dropdown submits both
@@ -77,6 +78,7 @@
         {% endif %}
 
         {% macro render_table(rows) %}
+    <div class="table-card">
     {% if rows %}
     <table>
         <thead>
@@ -119,6 +121,7 @@
     {% else %}
     <p class="empty">No attendance records found.</p>
     {% endif %}
+    </div>{# /.table-card #}
     {% endmacro %}
 
         {# Phase D4 refinement: search stays shared across both tabs (a
@@ -133,7 +136,15 @@
            Present; restores the last search term from localStorage so it
            survives an auto-refresh reload. #}
         <div class="table-controls">
-            <input type="text" id="table-search" class="search-input" placeholder="Search student name...">
+            <div class="search-wrap">
+                <input type="text" id="table-search" class="search-input" placeholder="Search student name...">
+                <button type="button" id="search-clear-btn" class="search-clear-btn" aria-label="Clear search" title="Clear search">&times;</button>
+            </div>
+            {# Phase D6: current session/tab/search/quick-filter are read from
+               live client state (not just the URL, since tab/search/quick
+               filter can change without a page reload) and sent to
+               /export.csv -- see dashboard.js. #}
+            <button type="button" id="export-csv-btn" class="export-btn">Export CSV</button>
         </div>
 
         <div class="tabs">
@@ -185,6 +196,7 @@
             {{ render_table(attempt_rows) }}
         </div>
     </form>
+    </div>{# /.page-container #}
 
     {# Phase D3: snapshot preview modal markup. Must appear BEFORE the
        dashboard.js <script src> tag below -- it does

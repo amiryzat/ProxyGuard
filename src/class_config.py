@@ -12,12 +12,17 @@
 # and free of spaces. This list is meant to be edited freely to add or remove
 # the subjects a lecturer can pick from.
 
+import re
 from datetime import datetime
 
 CLASS_SUBJECTS = [
-    "CSC649 - Special Topics in Computer Science",
-    "CSC648 - Software Engineering",
-    "CSC584 - Advanced Database",
+    "CSC 649 - SPECIAL TOPICS IN COMPUTER SCIENCE",
+    "CSC557 - MOBILE PROGRAMMING",
+    "ENT 600 - TECHNOLOGY ENTREPRENEURSHIP",
+    "CSP 600 - PROJECT FORMULATION",
+    "CSC645 - ALGORITHM ANALYSIS AND DESIGN",
+    "CSC580 - PARALLEL PROCESSING",
+    "TMC501 - INTRODUCTORY MANDARIN (LEVEL III)",
 ]
 
 # Teaching weeks a session can belong to (inclusive). Adjust if the semester
@@ -29,12 +34,15 @@ WEEK_MAX = 14
 def subject_code(subject):
     """
     Return the short code portion of a subject entry -- the text before the
-    first " - " (e.g. "CSC649" from "CSC649 - Special Topics in Computer
-    Science"). This code is what gets embedded into session_id, so it must be
-    space-free and filesystem-safe; keeping the split here means the rest of
-    the system never has to know how a subject string is laid out.
+    first " - " (e.g. "CSC649" from "CSC 649 - SPECIAL TOPICS IN COMPUTER
+    SCIENCE"). This code is what gets embedded into session_id, so it must be
+    space-free and filesystem-safe. Some subject codes are written with an
+    internal space (e.g. "CSC 649", "ENT 600") for readability in the
+    dropdown, so all whitespace -- not just leading/trailing -- is stripped
+    here, keeping every other part of the system free of ever having to know
+    how a subject string is laid out.
     """
-    return subject.split(" - ", 1)[0].strip()
+    return re.sub(r"\s+", "", subject.split(" - ", 1)[0])
 
 
 def build_session_id(subject, week_number, now=None):

@@ -29,29 +29,52 @@ function showTab(name) {
     applyFilters();
 }
 
-// "Last updated" reflects this page load's own time -- a fresh value
-// every auto-refresh cycle, no server timestamp/clock-sync needed.
 document.getElementById('last-updated').textContent = new Date().toLocaleTimeString();
 
-// Auto-refresh: the session/reason/tab filters are all plain GET
-// query params by this point, so a full reload of the current URL
-// re-renders with the latest attendance rows/snapshots/summary while
-// landing back on the exact same session, reason, and tab -- no
-// partial-DOM-patching or extra endpoint needed. Interval comes from
-// the server (REFRESH_SECONDS in app.py, threaded through as a
-// data-refresh-seconds attribute on <body> since this is now a static
-// file Jinja doesn't render) so the "auto-refresh every Xs" label above
-// can never drift out of sync with the real timer.
-// Phase D3 bug fix: a reload wipes any open modal out from under the
-// lecturer mid-review, which read as "the modal closes itself". Skip this
-// tick's reload while the modal is open rather than stopping/restarting the
-// interval -- the next tick (still on schedule) reloads normally as soon as
-// the modal is closed, so live updates resume with no extra bookkeeping.
+// Phase D5 smart refresh: poll the lightweight /status endpoint instead of
+// blindly reloading the whole page every REFRESH_SECONDS. Only reload once
+// /status reports a DIFFERENT version than what this page was rendered with
+// (attendance.csv's mtime+size -- see get_attendance_version() in app.py) --
+// if nothing new was logged, do nothing, so an open Session dropdown or a
+// focused search box is never yanked out from under the lecturer.
+//
+// A version change found while the lecturer is actively using a control
+// (search focused, session <select> focused, a quick-filter/tab button just
+// clicked -- it keeps focus after a click -- or the snapshot modal open)
+// sets pendingReload instead of reloading immediately; the reload happens on
+// the first later tick where none of those are true, so it's merely delayed,
+// never lost, and the modal in particular can never be closed by a refresh.
 var refreshSeconds = parseInt(document.body.dataset.refreshSeconds, 10);
-setInterval(function () {
-    if (!modal.classList.contains('open')) {
-        window.location.reload();
+var knownVersion = document.body.dataset.attendanceVersion;
+var pendingReload = false;
+
+function isUserBusy() {
+    if (modal.classList.contains('open')) {
+        return true;
     }
+    var active = document.activeElement;
+    return !!active && (
+        active === searchInput ||
+        active.id === 'session' ||
+        active.closest('.quick-filters') !== null ||
+        active.closest('.tabs') !== null
+    );
+}
+
+setInterval(function () {
+    fetch('/status')
+        .then(function (response) { return response.json(); })
+        .then(function (data) {
+            if (data.version !== knownVersion) {
+                pendingReload = true;
+            }
+            if (pendingReload && !isUserBusy()) {
+                window.location.reload();
+                return;
+            }
+            document.getElementById('last-updated').textContent = new Date().toLocaleTimeString();
+        })
+        .catch(function () { /* transient network hiccup -- just try again next tick */ });
 }, refreshSeconds * 1000);
 
 // Phase D3: snapshot preview modal. Event delegation on document
@@ -138,10 +161,26 @@ function applyFilters() {
     });
 }
 
+var searchClearBtn = document.getElementById('search-clear-btn');
+
+function updateSearchClearVisibility() {
+    searchClearBtn.classList.toggle('visible', searchInput.value.length > 0);
+}
+
 searchInput.value = localStorage.getItem(SEARCH_STORAGE_KEY) || '';
+updateSearchClearVisibility();
 searchInput.addEventListener('input', function () {
     localStorage.setItem(SEARCH_STORAGE_KEY, searchInput.value);
+    updateSearchClearVisibility();
     applyFilters();
+});
+
+searchClearBtn.addEventListener('click', function () {
+    searchInput.value = '';
+    localStorage.setItem(SEARCH_STORAGE_KEY, '');
+    updateSearchClearVisibility();
+    applyFilters();
+    searchInput.focus();
 });
 
 var savedQuickFilter = localStorage.getItem(QUICK_FILTER_STORAGE_KEY) || 'all';
@@ -156,3 +195,18 @@ quickFilterButtons.forEach(function (button) {
 });
 
 applyFilters(); // apply restored search/filter immediately on load (incl. after auto-refresh)
+
+// Phase D6: Export CSV. Reads LIVE client state -- not just the URL, since
+// tab/search/quick-filter can all change without a page reload -- and hands
+// it to /export.csv as query params; the server rebuilds the same filtered
+// row set (see matches_quick_filter() in app.py) and returns it as a
+// download. Quick filter is only meaningful on Attempts (mirrors
+// applyFilters()'s own onAttempts gate), so it's forced to "all" otherwise.
+document.getElementById('export-csv-btn').addEventListener('click', function () {
+    var params = new URLSearchParams(window.location.search);
+    var tab = document.getElementById('active-tab-field').value;
+    params.set('tab', tab);
+    params.set('search', searchInput.value);
+    params.set('quick_filter', tab === 'attempts' ? getActiveQuickFilter() : 'all');
+    window.location.href = '/export.csv?' + params.toString();
+});
