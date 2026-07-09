@@ -19,6 +19,14 @@ function showTab(name) {
     var params = new URLSearchParams(window.location.search);
     params.set('tab', name);
     history.replaceState(null, '', '?' + params.toString());
+
+    // Re-run search/quick-filter now that the active tab changed -- Present
+    // rows must never be hidden by a quick filter left active on Attempts
+    // (applyFilters() forces quick-filter to "all" whenever Attempts isn't
+    // the visible tab; see below). applyFilters is a hoisted function
+    // declaration further down this file, so it's already callable by the
+    // time a real click can trigger showTab().
+    applyFilters();
 }
 
 // "Last updated" reflects this page load's own time -- a fresh value
@@ -86,3 +94,65 @@ document.addEventListener('keydown', function (event) {
         closeSnapshotModal();
     }
 });
+
+// Phase D4: search + quick filters. Pure client-side, applied to the
+// .attendance-row <tr> elements already rendered in BOTH tables (Present and
+// Attempts share the same search input / quick-filter buttons, so switching
+// tabs keeps the same filter with no extra state-transfer code). Persisted
+// in localStorage (not the URL) so a typed search term survives an
+// auto-refresh reload without turning every keystroke into a page navigation.
+var SEARCH_STORAGE_KEY = 'dashboardSearch';
+var QUICK_FILTER_STORAGE_KEY = 'dashboardQuickFilter';
+var searchInput = document.getElementById('table-search');
+var quickFilterButtons = document.querySelectorAll('.quick-filter-btn');
+
+function getActiveQuickFilter() {
+    var active = document.querySelector('.quick-filter-btn.active');
+    return active ? active.dataset.filter : 'all';
+}
+
+function rowMatchesQuickFilter(row, filter) {
+    switch (filter) {
+        case 'success': return row.dataset.result === 'success';
+        case 'failed': return row.dataset.result === 'failed';
+        case 'flagged': return row.dataset.flagged === 'true';
+        case 'unknown': return row.dataset.unknown === 'true';
+        case 'duplicate': return row.dataset.duplicate === 'true';
+        case 'liveness': return row.dataset.liveness === 'true';
+        default: return true; // "all"
+    }
+}
+
+function applyFilters() {
+    var search = searchInput.value.trim().toLowerCase();
+    // Quick filters only mean anything on Attempts (every Present row is
+    // already a success) -- force "all" whenever that panel isn't the
+    // active tab, so a chip left active there can never hide Present rows.
+    // The chip's own .active class is left alone, so switching back to
+    // Attempts naturally restores whichever filter was last chosen.
+    var onAttempts = document.getElementById('tab-panel-attempts').classList.contains('active');
+    var filter = onAttempts ? getActiveQuickFilter() : 'all';
+    document.querySelectorAll('.attendance-row').forEach(function (row) {
+        var matchesSearch = !search || row.dataset.name.toLowerCase().indexOf(search) !== -1;
+        row.style.display = (matchesSearch && rowMatchesQuickFilter(row, filter)) ? '' : 'none';
+    });
+}
+
+searchInput.value = localStorage.getItem(SEARCH_STORAGE_KEY) || '';
+searchInput.addEventListener('input', function () {
+    localStorage.setItem(SEARCH_STORAGE_KEY, searchInput.value);
+    applyFilters();
+});
+
+var savedQuickFilter = localStorage.getItem(QUICK_FILTER_STORAGE_KEY) || 'all';
+quickFilterButtons.forEach(function (button) {
+    button.classList.toggle('active', button.dataset.filter === savedQuickFilter);
+    button.addEventListener('click', function () {
+        quickFilterButtons.forEach(function (b) { b.classList.remove('active'); });
+        button.classList.add('active');
+        localStorage.setItem(QUICK_FILTER_STORAGE_KEY, button.dataset.filter);
+        applyFilters();
+    });
+});
+
+applyFilters(); // apply restored search/filter immediately on load (incl. after auto-refresh)

@@ -100,12 +100,41 @@ tr.flagged td {
 .tab-panel.active {
     display: block;
 }
-/* Phase C: reason filter inside the Attempts tab. */
-.reason-filter {
+/* Phase D4: search box (shared) + quick filter chips (Attempts tab only). */
+.table-controls {
     margin-top: 1rem;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.75rem;
 }
-.reason-filter label {
-    margin-right: 0.5rem;
+.search-input {
+    padding: 6px 10px;
+    min-width: 16rem;
+    max-width: 100%;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+}
+.quick-filters {
+    margin-top: 1rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+}
+.quick-filter-btn {
+    font: inherit;
+    font-size: 0.85rem;
+    padding: 0.3rem 0.7rem;
+    border: 1px solid #ccc;
+    border-radius: 999px;
+    background: #f2f2f2;
+    color: #222;
+    cursor: pointer;
+}
+.quick-filter-btn.active {
+    background: #2e6da4;
+    border-color: #2e6da4;
+    color: #fff;
 }
 /* Phase D1: live monitoring indicator near the title. */
 .live-status {

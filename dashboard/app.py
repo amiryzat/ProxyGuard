@@ -362,6 +362,12 @@ def index():
         session_analytics=session_analytics,
         reason_breakdown=reason_breakdown,
         refresh_seconds=REFRESH_SECONDS,
+        # Phase D4: passed through so render_table can tag each row with a
+        # data-unknown/data-duplicate attribute for the client-side quick
+        # filters, reusing these constants instead of hardcoding the reason
+        # strings a second time in the template.
+        not_recognized_reason=pattern_flagger.NOT_RECOGNIZED_REASON,
+        duplicate_reason=pattern_flagger.DUPLICATE_REASON,
     )
 
 

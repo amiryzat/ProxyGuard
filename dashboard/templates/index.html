@@ -89,7 +89,13 @@
         </thead>
         <tbody>
             {% for row in rows %}
-            <tr {% if row.flagged %}class="flagged"{% endif %}>
+            <tr class="attendance-row {% if row.flagged %}flagged{% endif %}"
+                data-name="{{ row.cells.name }}"
+                data-result="{{ row.cells.result }}"
+                data-flagged="{{ 'true' if row.flagged else 'false' }}"
+                data-unknown="{{ 'true' if row.cells.name == 'Unknown' or row.cells.reason == not_recognized_reason else 'false' }}"
+                data-duplicate="{{ 'true' if row.cells.reason == duplicate_reason else 'false' }}"
+                data-liveness="{{ 'true' if 'liveness' in (row.cells.reason or '')|lower else 'false' }}">
                 {% for header in headers %}
                 <td>{{ row.cells[header] }}</td>
                 {% endfor %}
@@ -115,6 +121,21 @@
     {% endif %}
     {% endmacro %}
 
+        {# Phase D4 refinement: search stays shared across both tabs (a
+           lecturer may want to find a name regardless of which tab they're
+           on) -- but the quick filter chips move inside the Attempts panel
+           below, since "Failed"/"Flagged"/"Unknown"/"Duplicate"/"Liveness
+           Failed" are meaningless on Present (every Present row is already a
+           success). Not part of the session/reason GET form -- no name=
+           attribute, inert to that form's submission. dashboard.js forces
+           the quick-filter to "all" whenever the Attempts panel isn't the
+           active tab, so a chip left active there can never hide rows on
+           Present; restores the last search term from localStorage so it
+           survives an auto-refresh reload. #}
+        <div class="table-controls">
+            <input type="text" id="table-search" class="search-input" placeholder="Search student name...">
+        </div>
+
         <div class="tabs">
             <button type="button" class="tab-button {% if active_tab == 'present' %}active{% endif %}" id="tab-btn-present" onclick="showTab('present')">Present</button>
             <button type="button" class="tab-button {% if active_tab == 'attempts' %}active{% endif %}" id="tab-btn-attempts" onclick="showTab('attempts')">Attempts</button>
@@ -125,17 +146,17 @@
         </div>
 
         <div class="tab-panel {% if active_tab == 'attempts' %}active{% endif %}" id="tab-panel-attempts">
-            <div class="reason-filter">
-                <label for="reason">Reason:</label>
-                <select id="reason" name="reason" onchange="this.form.submit()">
-                    <option value="all" {% if selected_reason == 'all' %}selected{% endif %}>All reasons</option>
-                    {% for reason in reasons %}
-                    <option value="{{ reason }}" {% if reason == selected_reason %}selected{% endif %}>
-                        {{ reason }}
-                    </option>
-                    {% endfor %}
-                </select>
-                <noscript><button type="submit">Apply filters</button></noscript>
+            {# Phase D4 refinement: quick filter chips replace the old Reason
+               dropdown -- same job (narrow the Attempts table by outcome),
+               instant client-side toggle instead of a GET-submit round trip. #}
+            <div class="quick-filters">
+                <button type="button" class="quick-filter-btn active" data-filter="all">All</button>
+                <button type="button" class="quick-filter-btn" data-filter="success">Successful</button>
+                <button type="button" class="quick-filter-btn" data-filter="failed">Failed</button>
+                <button type="button" class="quick-filter-btn" data-filter="flagged">Flagged</button>
+                <button type="button" class="quick-filter-btn" data-filter="unknown">Unknown</button>
+                <button type="button" class="quick-filter-btn" data-filter="duplicate">Duplicate</button>
+                <button type="button" class="quick-filter-btn" data-filter="liveness">Liveness Failed</button>
             </div>
 
             {# Phase D2 refinement: Reason Breakdown only makes sense for
