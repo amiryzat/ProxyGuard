@@ -6,6 +6,7 @@
 const statusEl = document.getElementById('status');
 const statusCard = document.getElementById('status-card');
 const newBtn = document.getElementById('newCheck');
+const endBtn = document.getElementById('endSession');
 
 // Maps CheckinSession.flow_phase (src/main.py) to a restrained visual tone.
 // null/"liveness_success" -> neutral/in-progress; "confirmed" -> success;
@@ -35,6 +36,18 @@ async function poll() {
 newBtn.addEventListener('click', async () => {
     newBtn.disabled = true;
     await fetch('/reset', { method: 'POST' });
+});
+
+// Release the camera/session server-side (stops the MJPEG generator,
+// cv2.VideoCapture.release()) before navigating back to setup -- otherwise
+// the backend keeps the webcam open even though the browser has moved on.
+endBtn.addEventListener('click', async () => {
+    endBtn.disabled = true;
+    try {
+        await fetch('/end_session', { method: 'POST' });
+    } finally {
+        window.location.href = '/';
+    }
 });
 
 setInterval(poll, 500);

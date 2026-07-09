@@ -245,6 +245,41 @@ def reset():
     return ("", 204)
 
 
+def _end_station():
+    """
+    Fully tear down the single check-in station: release the webcam, close
+    the shared session's FaceMesh, and bump _stream_generation so any
+    in-flight /video_feed generator's while loop sees a mismatch and exits
+    on its next iteration instead of continuing to hold the camera. Guards
+    every step on "is not None" so calling this repeatedly (e.g. a
+    double-click, or End Session hit with no active session) is a no-op
+    past the first call rather than raising.
+    """
+    global _stream_generation
+    with _station_lock:
+        _stream_generation += 1
+        if _station["session"] is not None:
+            _station["session"].close()
+            _station["session"] = None
+        if _station["cap"] is not None:
+            _station["cap"].release()
+            _station["cap"] = None
+        _station["session_id"] = None
+        _station["subject"] = None
+        _station["week"] = None
+
+
+@app.route("/end_session", methods=["POST"])
+def end_session():
+    """
+    "End session / set up a different class": release the camera and clear
+    the station so the MacBook camera light actually turns off, instead of
+    just navigating back to the setup page while capture keeps running.
+    """
+    _end_station()
+    return ("", 204)
+
+
 if __name__ == "__main__":
     # threaded=True so the long-lived MJPEG stream doesn't block /status,
     # /reset, and page loads. No debug reloader: it would spawn a second
