@@ -1,41 +1,62 @@
 
 ## Completed
-- Step 1: Environment and folder structure
-- Step 2: Face detection (`face_detector.py`) using OpenCV Haar Cascade
-- Step 3: Face recognition (`face_recognizer.py`) using `face_recognition` encodings, EXIF orientation correction, margin-based disambiguation
-- Step 4: Liveness detection — blink detection, randomized head movement challenge, and a randomized voice/word challenge (the voice module was built but later removed from the live `main.py` flow — see [[decisions]] Decision 7)
-- Step 4.5: Combined check-in flow (`main.py`) — the anti-proxy identity re-verification added here ran only during the voice listening phase and is inactive now that voice was removed
-- Step 5: Attendance logging system (`attendance_logger.py`)
-- Step 6: Proxy/suspicious pattern flagging (`pattern_flagger.py`)
-- Step 7: Lecturer dashboard (`dashboard/`) — Flask web app: attendance table, session filter (defaults to most recent session), flagged-row highlighting reusing `pattern_flagger.py`, and a per-session summary (total / successful / failed / flagged)
-- Phase 1 (session_id restructuring, not in original numbered plan): `session_id` now includes class subject + week context instead of a bare timestamp — predefined subject list and `build_session_id()` added in `src/class_config.py`; `src/main.py` prompts the lecturer for class + week in the terminal before generating it. See [[decisions]] Decision 8.
-- Phase 2a (student check-in web app, setup page only): new standalone `checkin_app/` Flask app — class + week dropdowns, generates and displays `session_id` via the shared `class_config.build_session_id()`. See [[decisions]] Decision 9.
-- Check-in engine refactor: `src/main.py`'s per-frame recognition/liveness/logging/snapshot logic was extracted into a `CheckinSession` class so the desktop flow and `checkin_app/` share one engine instead of duplicating it.
-- Phase 2b (student check-in web app, live check-in): `checkin_app/` now streams the webcam into the browser as MJPEG, driven by the shared `CheckinSession` — full recognition + liveness + logging + snapshot flow, a "New check-in" button in place of the desktop's `n` key, and streaming performance tuning (frame-rate cap, single-active-stream guard, decoupled processing/display resolution). See [[bugs]] Bug 6/Bug 7.
-- Dashboard Phase A (inline verification snapshots): each attendance row matches and displays a thumbnail of its `logs/snapshots/` file (or a "no snapshot" placeholder), with a fallback match on session+reason+timestamp for older rows where the CSV name and snapshot name diverged (see [[bugs]] Bug 8).
-- Dashboard Phase B (Present / Attempts tabs): the attendance table is split into two tabs on one page, filtered by `result`, each with its own per-tab summary stats.
-- Dashboard Phase C (reason filter): a reason dropdown inside the Attempts tab, scoped to the selected session and applied on top of the session filter.
-- Anti-proxy safeguards in the check-in engine: single-person enforcement during the active challenge (see [[decisions]] Decision 10, [[bugs]] Bug 5), and an identity-liveness continuity guard preventing a recognized identity from transferring to a swapped-in face/photo (see [[decisions]] Decision 11, [[bugs]] Bug 9). On-screen bounding boxes are now color-coded red (unrecognized) / green (recognized).
-- Logging fix: a recognized student who fails the liveness challenge is now logged (CSV and dashboard) under their real name instead of "Unknown", matching what the verification snapshot already showed (see [[bugs]] Bug 8).
+
+### Core detection pipeline
+- ✅ Step 1: Environment and folder structure
+- ✅ Step 2: Face detection (`face_detector.py`) using OpenCV Haar Cascade
+- ✅ Step 3: Face recognition (`face_recognizer.py`) using `face_recognition` encodings, EXIF orientation correction, margin-based disambiguation
+- ✅ Step 4: Liveness detection — blink detection, randomized head movement challenge, and a randomized voice/word challenge (the voice module was built but later removed from the live flow — see [[decisions]] Decision 7)
+- ✅ Step 4.5: Combined check-in flow (`CheckinSession` in `src/main.py`)
+- ✅ Step 5: Attendance logging system (`attendance_logger.py`)
+- ✅ Step 6: Proxy/suspicious pattern flagging (`pattern_flagger.py`)
+- ✅ Session identity restructuring: `session_id` includes class subject + week context (`src/class_config.py`) — see [[decisions]] Decision 8
+- ✅ Check-in engine refactor: `CheckinSession` shared by the desktop flow and `checkin_app/`
+- ✅ Multi-face detection: the liveness challenge pauses while more than one face is in frame — see [[decisions]] Decision 10
+- ✅ Active face continuity / bounding-box transfer protection: a recognized identity cannot silently transfer to a swapped-in face or photo — see [[decisions]] Decision 11
+- ✅ Duplicate check before liveness: a student who already checked in this session is stopped before the liveness challenge runs, instead of after — see [[decisions]] Decision 12
+- ✅ Correct-name attribution on failed/duplicate attempts (no more spurious `"Unknown"` rows) — see [[bugs]]
+
+### Student check-in web app (`checkin_app/`)
+- ✅ Session picker (class + week → `session_id`)
+- ✅ Live check-in page streaming the webcam as MJPEG, driven by the shared `CheckinSession`
+- ✅ Streaming performance tuning (frame-rate cap, single-active-stream guard, decoupled processing/display resolution)
+- ✅ End-session camera cleanup (webcam released and station cleared, not just navigated away from)
+- ✅ Skeleton loading UI: immediate full-page skeleton on session start, revealed only once the camera stream and station are genuinely ready, with a distinct timeout/failure + retry state
+- ✅ Separated HTML/CSS/JavaScript architecture (`templates/`, `static/css/checkin.css`, `static/js/checkin.js`)
+
+### Lecturer dashboard (`dashboard/`)
+- ✅ Dashboard redesign: modern, separated HTML/CSS/JS architecture on a single monochromatic design system (see `docs/ui-references/DESIGN.md`)
+- ✅ Present / Attempts tabs, session filter, Attempts-only quick filters, and independent review-status filters
+- ✅ Search (client-side, persisted across smart refresh)
+- ✅ Analytics cards (session overview + Reason Breakdown)
+- ✅ Inline verification snapshots + snapshot preview modal
+- ✅ Flagged-row highlighting reusing `pattern_flagger.py`
+- ✅ CSV export mirroring the currently filtered view
+- ✅ Lecturer review workflow (Accept / Suspicious + note, `logs/reviews.csv`, independent of the raw attendance log)
+- ✅ Smart auto-refresh: content-derived change-detection token (not filesystem mtime alone), no-cache headers, interaction-safe deferred reload
+- ✅ ProxyGuard Assistant: rule-based, prioritized, actionable recommendation panel (session summary, resolution-aware cards, filter/next-unreviewed action buttons)
 
 ## In Progress
-- 
+-
 
 ## Next
-- Step 8: Testing and refinement
+- Step 8: Testing and refinement (see [[testing]])
+- Continue expanding automated test coverage for the dashboard review workflow and the `checkin_app` skeleton-loading UI
 
 ## Future
-- Possible move from CSV to SQLite for attendance storage if the dashboard needs querying
-- Countermeasure for live video call replay (screen/moiré detection) — not yet addressed. Distinct from the swapped-photo loophole closed by the identity-continuity guard (Decision 11): a live video call of the real student can genuinely blink and turn its head on command, so it isn't caught by continuity or liveness checks alone.
+- Possible move from CSV to SQLite for attendance storage if querying needs grow beyond what CSV comfortably supports.
+- Countermeasure for live video call replay (screen/moiré detection) — not yet addressed. Distinct from the swapped-photo loophole closed by the active-face-continuity guard (Decision 11): a live video call of the real student can genuinely blink and turn its head on command, so it isn't caught by continuity or liveness checks alone.
+- Possible reintegration of the voice challenge (`src/voice_challenge.py`), currently built but unused (Decision 7).
 
 ## Blocked
-- 
+-
 
-
-## ## Related Documentation
+## Related Documentation
 
 - [[project-overview]]
+- [[architecture]]
 - [[decisions]]
 - [[testing]]
 - [[bugs]]
+- [[report]]
 - [[CLAUDE]]

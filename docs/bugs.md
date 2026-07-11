@@ -1,210 +1,155 @@
 # Bugs
 
-This document tracks important bugs, causes, fixes, and current status.
+This document tracks important bugs, causes, fixes, and current status, organized into Resolved / Known Issues / Future Improvements. See [[decisions]] for the design rationale behind each fix and [[testing]] for how each was verified.
 
 ---
 
-## Bug 1: Bounding box label can flash to "Unknown" on a single bad frame
+## Resolved
 
-### Bug
-A correctly recognized student could have their on-screen bounding box label flip to "Unknown" right as the head-movement/blink challenge locked in — even though they were recognized throughout the challenge. It was most visible when a recognized person sat still and let the challenge fail: the label read "Unknown" at the moment of locking, making it look like the system had lost track of a known person when in reality only a single frame had missed the match.
+### Bug 1: Bounding box label can flash to "Unknown" on a single bad frame
 
-### Where
-`src/main.py`, the bounding box drawing loop (the `zip(last_face_locations, last_names)` loop that draws the rectangle and identity label).
+**Bug:** A correctly recognized student could have their on-screen bounding box label flip to "Unknown" right as the head-movement/blink challenge locked in, even though they were recognized throughout the challenge.
 
-### Cause
-The label was drawn from `last_names` directly — the raw per-frame result of `recognize_face`. Off-angle frames during a head turn (and stray misdetections generally) routinely produce a one-frame "Unknown". If such a frame happened to be the last one processed before `check_locked` flipped true, the raw "Unknown" was what got drawn. On a failing outcome this was compounded: once locked, the fail branch feeds the label `confirmed_name or "Unknown"`, and `confirmed_name` is `None` on a fail, so the label stayed "Unknown" as well.
+**Cause:** The label was drawn from the raw per-frame `recognize_face` result, which routinely returns a one-frame "Unknown" on off-angle frames during a head turn.
 
-This is the same class of problem the existing `identified_name` protection already solved for the *logic* path (see CLAUDE.md, Core System Design §3, "Pre-lock identity tracking") — `identified_name` ignores single "Unknown" frames so a real student isn't logged as `not_recognized`. But that protection was never applied to the value used for the *visible label*, so the label had no such guard. This bug is related to, but distinct from, that earlier fix: same root cause (a single bad frame), different affected surface (what's drawn vs. what's logged).
+**Fix:** Introduced `last_known_name` in `src/main.py`, which only updates on a non-"Unknown" match (the same anti-flicker guard `identified_name` already used for the logic path) and is used for the drawn label instead of the raw per-frame name.
 
-### Fix
-Introduced a separate tracked variable `last_known_name` in `src/main.py` that only updates when `recognize_face` returns a non-"Unknown" name — the same guard `identified_name` uses. The bounding box label is now drawn from `last_known_name` (`display_name = last_known_name or name`) instead of the raw `last_names[0]`, falling back to the raw name only before any confident match has been made. Unlike `identified_name`, `last_known_name` updates in the locked phase too, so a passing check keeps showing the confirmed identity and a failing check holds the last confident identity rather than flipping to "Unknown". It is reset to `None` on the `n` restart alongside `identified_name`. The raw `last_names` list is left untouched and still used wherever the actual per-frame recognition result matters. Only `src/main.py` was changed.
-
-### Status
-Fixed.
+**Status:** Fixed.
 
 ---
 
-## Bug 2: Verification snapshot filename saved as "unknown" for a recognized student on a failed attempt
+### Bug 2: Verification snapshot filename saved as "unknown" for a recognized student on a failed attempt
 
-### Bug
-When a registered student was correctly recognized throughout a *failed* liveness attempt (their real name shown on the bounding box the whole time), the saved verification snapshot in `logs/snapshots/` was still named with `unknown` — e.g. `2026-07-07_1814_unknown_liveness_timeout_181625.jpg` for someone who was clearly identified as a known student. This makes the manual-review snapshots misleading and hard to attribute, since the filename contradicts the identity that was visible on screen.
+**Bug:** A registered student correctly recognized throughout a *failed* attempt still had their snapshot filename say `unknown`.
 
-### Where
-`src/main.py`, the terminal-outcome block that builds the snapshot filename via `build_snapshot_filename(...)` before `cv2.imwrite`.
+**Cause:** The snapshot filename was built from `confirmed_name`, which is `None` on every failed outcome regardless of whether the student was confidently recognized earlier in the attempt.
 
-### Cause
-The snapshot filename was built from `confirmed_name or "unknown"`. `confirmed_name` is only set on a passing liveness outcome and is `None` on every failed outcome (`liveness_failed`, `not_recognized`, `identity_mismatch`). So on a failure the filename always fell back to `"unknown"`, even when the student had been confidently recognized during the attempt. The on-screen bounding box label had already been fixed to avoid exactly this by using the bad-frame-protected `last_known_name` (see Bug 1), but the snapshot filename was never switched over to that same protected value — so the label and the filename disagreed on a failed attempt.
+**Fix:** Build the snapshot filename from `last_known_name or "unknown"` instead, matching the on-screen label fix in Bug 1.
 
-### Fix
-Build the snapshot filename from `last_known_name or "unknown"` instead of `confirmed_name or "unknown"` in `src/main.py`. `last_known_name` holds the last confidently recognized identity regardless of pass/fail (it only updates on a non-"Unknown" recognition), so a recognized student's snapshot is now named with their real name even when the attempt fails, and it falls back to `"unknown"` only when no confident identity was ever established during the attempt (e.g. a genuine `not_recognized`). This is a direct follow-on to the Bug 1 `last_known_name` fix, reusing the very same protected variable for a second output surface (the snapshot filename) that had been left on the unprotected `confirmed_name`. The attendance log row is deliberately left keyed on `confirmed_name` — only `attendance_logger.py` is untouched and only the snapshot filename construction in `main.py` changed. Only `src/main.py` was modified.
-
-### Status
-Fixed.
+**Status:** Fixed.
 
 ---
 
-## Bug 3: Bounding box keeps showing the previous student's name after the check locks
+### Bug 3: Bounding box keeps showing the previous student's name after the check locks
 
-### Bug
-After a check-in reaches a locked state (the 2s `liveness_success` phase and the terminal `confirmed` / `not_recognized` / `liveness_failed` / `identity_mismatch` states, which wait for a reset), the bounding box keeps tracking whoever is currently in frame via `locate_faces`, but the name label stayed frozen on the previously recognized identity. If one student finished their check-in and stepped away and a different student sat down before `n` (desktop) / "New check-in" (web) was pressed, the box drew the previous student's name over the new person's face — misleading, and in a proxy-detection system actively wrong.
+**Bug:** After a check-in locks, a different person stepping into frame before "New check-in" was pressed could have the *previous* student's name drawn over their face.
 
-### Where
-`src/main.py`, `CheckinSession.process_frame` — the bounding box drawing loop (`zip(self.last_face_locations, self.last_names)`). Because this is the shared check-in engine, the bug appeared identically in the desktop app and the `checkin_app/` web page, which both drive `CheckinSession`.
+**Cause:** `last_known_name` is deliberately never cleared (that's what stops the pre-lock flicker in Bug 1), and the drawing loop applied it unconditionally, including after locking (when only position tracking, not full recognition, is still running).
 
-### Cause
-A direct side effect of the Bug 1 fix interacting with the `check_locked` state. `last_known_name` is deliberately never cleared to "Unknown" (that is exactly what stops the pre-lock flicker), and the drawing loop applied `display_name = last_known_name or name` unconditionally — including after `check_locked` became true. Once locked, full recognition stops running (only `locate_faces` tracks position, with `names` filled as `confirmed_name or "Unknown"`), so `last_known_name` is frozen at the last recognized identity and got painted onto whoever the box now followed, regardless of whether it was still the same person.
+**Fix:** Gate the drawn label on `check_locked` — once locked, only the tracking rectangle is drawn, no name label.
 
-### Fix
-Gate the label on `check_locked` in the drawing loop. While the challenge is active (`not check_locked`) the label still uses the bad-frame-protected `last_known_name or name` exactly as before, so Bug 1's protection is intact. Once `check_locked` is true, no name label is drawn at all — only the tracking rectangle. `last_known_name` itself is left untouched (still needed for the anti-flicker guard during the challenge and for the Bug 2 snapshot filename), so this changes only how the label is *displayed* after locking, not the protection logic. The fix lives in the shared `CheckinSession.process_frame`, so it applies to both the desktop flow and `checkin_app/` with no separate change. Only `src/main.py` was modified.
-
-### Status
-Fixed.
+**Status:** Fixed.
 
 ---
 
-## Bug 4: Duplicate check-in's snapshot filename says "confirmed" while the CSV correctly logs it as a duplicate failure
+### Bug 4: Duplicate check-in's snapshot filename said "confirmed" while the CSV correctly logged a duplicate failure
 
-### Bug
-When the same student successfully checked in twice within one session, the second attempt was correctly downgraded in `logs/attendance.csv` to `result=failed`, `reason="duplicate check-in this session"` — but the verification snapshot saved for that same attempt in `logs/snapshots/` was still named `..._confirmed_....jpg`. The snapshot filename and the CSV row disagreed about the outcome of the same attempt, making a duplicate look like a confirmed success if a lecturer reviewed the snapshots rather than the CSV `result`/`reason` columns.
+**Bug:** A second successful check-in within one session was correctly downgraded to `result=failed`, `reason=duplicate check-in this session` in the CSV, but its snapshot filename still said `..._confirmed_....jpg`.
 
-### Where
-`src/main.py`, `CheckinSession.process_frame` — the terminal-outcome block that calls `log_attendance(...)` and then builds the snapshot filename via `build_snapshot_filename(...)`. Because this is the shared check-in engine, the behavior was identical in the desktop app and the `checkin_app/` web page (both drive `CheckinSession`).
+**Cause:** `attendance_logger.log_attendance()` performs the downgrade internally and **returns** the actually-written `(result, reason)`, but the caller discarded that return value and built the snapshot filename from the pre-downgrade reason instead.
 
-### Cause
-`attendance_logger.log_attendance` performs the session-scoped duplicate downgrade *internally* and **returns** the actual written `(result, reason)` (which may differ from what was passed in). The caller ignored that return value: it called `log_attendance(..., "success", "confirmed", ...)` and then built the snapshot filename from the local pre-downgrade `log_reason` (`"confirmed"`). So on a duplicate, the CSV row was downgraded correctly (the downgrade happens inside `log_attendance`) but the snapshot filename kept the stale `"confirmed"` reason. This was not a duplicate-detection failure — dedup worked — purely a naming inconsistency from discarding `log_attendance`'s return value.
+**Fix:** Capture and use `log_attendance()`'s return value when building the snapshot filename, so the filename always matches the CSV row for the same attempt.
 
-### Fix
-Capture `log_attendance`'s return value and use the actually-written reason when constructing the snapshot filename: `_, written_reason = log_attendance(...)`, then `build_snapshot_filename(session_id, last_known_name or "unknown", written_reason)` instead of passing `log_reason`. A duplicate attempt's snapshot is now named `..._duplicate_check_in_this_session_....jpg`, matching its CSV row. The fix lives in the shared `CheckinSession.process_frame`, so it applies to both the desktop flow and `checkin_app/` with no separate change. `attendance_logger.py` was not touched (it already returned the correct value); only how that return value is consumed in `main.py` changed. Only `src/main.py` was modified.
-
-### Status
-Fixed.
+**Status:** Fixed.
 
 ---
 
-## Bug 5: Multi-face handling — shared identity label on every box, and challenge progressing with multiple people in frame
+### Bug 5: Multi-face handling — shared identity label on every box, and challenge progressing with multiple people in frame
 
-Two related issues found during testing with two people in frame at once. Both were in the shared `CheckinSession.process_frame` (`src/main.py`), so they affected the desktop app and the `checkin_app/` web page identically.
+**Issue A:** With more than one face in frame, every box was labeled with the single `last_known_name`, so a second person's box wrongly showed the registered student's name.
+**Fix:** Each box is labeled with its own per-face recognition result when more than one face is present; `last_known_name`'s fallback only applies with exactly one face.
 
-### Issue A — every face box showed the same locked identity
+**Issue B:** The liveness challenge could progress and lock while more than one face was in frame, letting one person perform the challenge while another (possibly registered) face was also present.
+**Fix:** While an attempt is active, the challenge pauses entirely (no mediapipe, no progress, no timeout) whenever more than one face is detected, with an on-screen warning; it resumes with the same target direction and full time once back to one face. See [[decisions]] Decision 10.
 
-**Bug:** With more than one face in frame, all boxes were labeled with the single `last_known_name`, so a second (or unregistered) person's box showed the registered student's name instead of their own recognition result.
-
-**Cause:** A side effect of the Bug 1 fix. `last_known_name` is a single-identity anti-flicker guard, but the drawing loop applied `display_name = last_known_name or name` to *every* box, and the `last_known_name`/`identified_name` updates took `last_names[0]` regardless of how many faces were present.
-
-**Fix:** In the drawing loop, when more than one face is detected each box is labeled with its own per-face `name`; the `last_known_name` fallback is used only when exactly one face is present (where the Bug 1 protection is meaningful). The `last_known_name` and `identified_name` updates are also gated on exactly one detected face, so one face out of several can never become the tracked or to-be-confirmed identity. Only `src/main.py` changed.
-
-### Issue B — liveness challenge progressed with multiple faces present
-
-**Bug:** The liveness challenge could run, advance, and lock while more than one face was in frame, so one person could perform the head-movement/blink challenge while a different person's face was also present — undermining the identity/liveness binding.
-
-**Cause:** mediapipe Face Mesh is configured `max_num_faces=1`, so blink/head-pose only ever tracked one face, and nothing checked the total detected-face count (available from `recognize_face`) before running or locking the challenge.
-
-**Fix:** During an active (unlocked) attempt, if more than one face is detected the challenge is paused: mediapipe is not run, the challenge cannot advance or lock, and its countdown is pinned to full time so the interruption can't cause a timeout failure. A clear warning ("Only one person allowed in frame, please ensure you are alone during check-in") is shown on-frame and via `checkin_app`'s status banner. Once a single face remains, the challenge resumes with full time and the same target direction. See docs/decisions.md (Decision 10). Only `src/main.py` changed.
-
-### Status
-Fixed.
+**Status:** Fixed.
 
 ---
 
-## Bug 6: `checkin_app` web check-in lags and crashes on extended use (MacBook Air M5)
+### Bug 6 & 7: `checkin_app` web check-in lagged/crashed on extended use, then an over-correction made the preview blurry
 
-### Bug
-The web check-in (`checkin_app/`) was noticeably laggier than the desktop app and crashed during extended use, especially across many check-in attempts in one session (repeatedly pressing "New check-in").
+**Bug 6:** The web check-in noticeably lagged and crashed during extended use (many repeated check-in attempts).
+**Cause:** Native-resolution camera capture plus full-quality per-frame JPEG encoding for the MJPEG stream (a cost the desktop's `cv2.imshow` window never pays), with no frame-rate cap; and an unbounded number of `/video_feed` generator threads accumulating across reloads/reconnects, all contending for one webcam and one shared session.
+**Fix:** Lowered capture resolution and JPEG quality, added a ~20 FPS cap, and added a `_stream_generation` counter so only the newest stream generator drives the camera.
 
-### Where
-`checkin_app/app.py` — the webcam capture setup (`_start_station`) and the MJPEG generator (`_generate_frames`). Not `src/main.py`: the recognition/mediapipe work is shared and was already optimized.
+**Bug 7:** Bug 6's fix worked but made the browser preview blurry/low-resolution.
+**Cause:** Processing resolution and display resolution don't need to move together — `CheckinSession.process_frame` already downscales internally for the heavy steps and draws results back onto the full-size frame, so shrinking the *capture* size only needlessly shrank the *display*, not the processing cost.
+**Fix:** Capture/stream at a clear 1280×720 again (recognition still runs on an internal 0.25x copy), JPEG quality raised to 80; the Bug 6 perf/crash fixes (frame-rate cap, single-stream guard) are unchanged.
 
-### Cause
-Two separate problems, both streaming-specific (the desktop app doesn't stream, so it never paid these costs):
-
-**Lag.** The heavy per-frame work — face recognition every 3rd frame at 0.25x scale, mediapipe at 0.5x scale — already lives in the shared `CheckinSession.process_frame`, and `checkin_app` *does* reuse it (it calls `session.process_frame`). So frame skipping/downscaling was **not** the problem. The web-only overhead was: (a) `cv2.VideoCapture(0)` opened at the camera's **native resolution** (often 1080p on a MacBook), and (b) **every** frame JPEG-encoded at OpenCV's default quality (95) for the MJPEG stream. Encoding a full-resolution, high-quality JPEG per frame — a cost the desktop's native `cv2.imshow` window never incurs — was the dominant extra load. The capture/encode loop also ran with no frame-rate cap, pegging the CPU; on a fanless MacBook Air M5 (dlib and mediapipe are CPU-only here — no usable GPU offload for this stack) sustained 100% CPU causes thermal throttling, which shows up as progressive lag.
-
-**Crash.** Each `<img>`→`/video_feed` connection starts a `_generate_frames()` generator in its own Flask worker thread. On a page reload, a second tab, or the browser reconnecting the stream, a **new** generator started while the old one kept looping (reading the camera and running mediapipe). Nothing bounded this, so over extended use camera-read/mediapipe threads accumulated, all contending for the single webcam and the single shared session — resource growth that both worsened lag and led to crashes. (mediapipe graphs are not thread-safe; the `_station_lock` serialized `process_frame` so calls never truly overlapped, but the pile-up of live threads/handles remained.)
-
-### Fix
-All changes are in `checkin_app/app.py`; `src/main.py` and the desktop flow are untouched (desktop keeps native capture):
-- **Capture resolution** lowered to 640×480 via `cap.set(CAP_PROP_FRAME_WIDTH/HEIGHT, ...)`, so every downstream step (recognition, mediapipe, and especially the per-frame JPEG encode) works on a much smaller frame.
-- **JPEG stream quality** dropped from the default 95 to 60 (`cv2.imencode(".jpg", frame, [IMWRITE_JPEG_QUALITY, 60])`) — still clearly legible for a face and on-screen instructions, far cheaper to encode and transmit.
-- **Frame-rate cap** of ~20 FPS added to the generator loop (a short sleep, taken *outside* the lock), so the loop can't spin the CPU flat out between recognition frames.
-- **Single-stream guard**: a module-level `_stream_generation` counter is bumped when a new stream starts; each generator exits its loop once superseded, so only the newest generator ever drives the camera + session. This stops thread/handle accumulation across reloads and repeated attempts.
-
-Frame skipping and downscaling were confirmed already-shared and left as-is (no duplication introduced). Trade-off noted: recognition now runs on a 640×480 capture (its internal 0.25x → 160×120), smaller than the desktop's native-capture input; kiosk check-ins have a large, close face so this is expected to be fine, and `CAPTURE_WIDTH/HEIGHT` are named constants that can be raised (e.g. 960×540) if recognition degrades. Snapshots are now saved at the capture resolution (640×480) rather than native.
-
-### Status
-Fixed.
+**Status:** Both fixed.
 
 ---
 
-## Bug 7: First lag fix over-corrected — web preview became blurry/low-resolution
+### Bug 8: Failed liveness attempts from a recognized student were logged as "Unknown"
 
-### Bug
-The Bug 6 lag fix worked, but it made the browser preview look blurry and low-resolution — a step backward for something meant to be demoed.
+**Bug:** A registered student recognized during a check-in but who then failed the liveness challenge was logged as `name=Unknown` in the CSV, even though the on-screen label and snapshot filename both showed the correct name.
 
-### Where
-`checkin_app/app.py` — the capture-resolution and JPEG-quality knobs added in Bug 6.
+**Cause:** The identity passed to `log_attendance()` was `confirmed_name or "Unknown"`, and `confirmed_name` is explicitly `None` on every failed outcome regardless of prior recognition.
 
-### Cause
-Bug 6 lowered **both** the processing cost and the visible quality together, by dropping the capture resolution to 640×480 and the JPEG quality to 60. But processing resolution and display resolution don't need to move together: the shared `CheckinSession.process_frame` already decouples them — it downscales *internally* for the heavy steps (recognition on a 0.25x copy, mediapipe on a 0.5x copy) and draws the resulting boxes/labels back onto the full-size frame, which is what gets streamed. So the small 640×480 capture shrank the displayed frame (and the internal 0.25x recognition copy to a marginal 160×120) with no real need — the capture size only meaningfully drives the per-frame JPEG **encode** cost, not the recognition/mediapipe cost.
+**Fix:** Changed the logged identity to `confirmed_name or last_known_name or "Unknown"` — recovers the real name on a failure without ever changing what gets logged on an actual success (the two variables always move in lockstep pre-lock) or on a genuinely unrecognized attempt (`last_known_name` is also `None` there).
 
-### Fix
-Decouple the two by capturing at a clear display resolution again and letting `process_frame`'s existing internal downscale handle processing speed:
-- **Capture (and stream) at 1280×720** instead of 640×480. The internal 0.25x recognition copy is now 320×180 — the same input size the desktop flow has always used successfully — and mediapipe runs on a 0.5x (640×360) copy, with boxes/labels scaled back onto the full 1280×720 frame for display. No new code was needed for this decoupling; it is the pattern already in the shared `process_frame`.
-- **JPEG stream quality raised from 60 to 80** — moderate-high, presentable for a demo.
-- The Bug 6 crash/perf fixes are **unchanged**: full recognition still runs only every 3rd frame, the generator is still capped at ~20 FPS, and the single-stream `_stream_generation` guard still prevents thread/handle accumulation. Because processing resolution is now handled separately, capturing larger is affordable — the extra cost is only the JPEG encode (a larger frame at quality 80 vs. the old small frame at 60), well below the original native-1080p/quality-95 path that caused the crash. Verification snapshots are now saved at 1280×720 again.
-
-### Values (capture / processing / stream)
-- **Capture:** 1280×720
-- **Processing:** recognition on 0.25x → 320×180 (every 3rd frame); mediapipe on 0.5x → 640×360
-- **Stream:** 1280×720 (full frame with boxes/labels), JPEG quality 80, ≤20 FPS
-
-### Status
-Fixed.
+**Status:** Fixed.
 
 ---
 
-## Bug 8: Failed liveness attempts from a recognized student were logged as "Unknown"
+### Bug 9: Recognized identity could silently transfer to a different/swapped face during an active liveness challenge (proxy bypass)
 
-### Bug
-A registered student who was correctly recognized during a check-in, but then failed the head-movement/blink liveness challenge, had their attendance row logged as `name=Unknown` instead of their real name — even though the on-screen label and the verification snapshot filename both showed the correct name the whole time. The dashboard, which reads directly from `logs/attendance.csv`, inherited the same problem.
+**Bug:** A student could be correctly recognized once, then swap in a different face (an unregistered face, another student's photo, or a phone screen), and still have the liveness challenge complete under the *first* recognized identity.
 
-### Where
-`src/main.py`, `CheckinSession.process_frame` — the terminal-outcome block that calls `log_attendance(...)`.
+**Cause:** `identified_name`/`last_known_name` were sticky with no re-validation — once set, nothing ever cleared them if a later frame showed a different face, only overwritten by another confident match. The challenge's pass/fail signal itself has no awareness of identity at all.
 
-### Cause
-The identity passed to `log_attendance` was `self.confirmed_name or "Unknown"`. `confirmed_name` is explicitly set to `None` on **every** failed outcome (`liveness_failed`, and `not_recognized` whenever no confident match was made) regardless of whether the person had already been confidently recognized earlier in the same attempt. So any failed attempt fell straight to `"Unknown"` in the CSV, while the snapshot filename (already fixed in Bug 2) used the bad-frame-protected `last_known_name` and showed the real name — the two outputs disagreed on the same attempt.
+**Fix:** Added the identity-liveness continuity guard, `CheckinSession._update_identity_continuity()` (see [[decisions]] Decision 11): a locked-in identity only stays valid while later checks keep matching the same name at a similar face position, tolerating a small number of consecutive mismatches (mirroring Bug 1's anti-flicker slack) before clearing and restarting the challenge. This is the project's bounding-box transfer protection. Verified via `src/test_face_continuity.py` and scripted `CheckinSession` scenarios — see [[testing]].
 
-### Fix
-Changed the logged identity to `self.confirmed_name or self.last_known_name or "Unknown"`. `identified_name` and `last_known_name` are updated from the exact same trigger (a single confidently recognized face) and always move in lockstep pre-lock, and `confirmed_name` is only ever derived from `identified_name` — so `confirmed_name` is never truthy while `last_known_name` is falsy, meaning this fallback **never changes a successful "confirmed" row**, it only recovers the identity on a failure. A genuinely unrecognized attempt (`not_recognized`) still logs `"Unknown"`, since `last_known_name` is also `None` in that case. Session-based duplicate detection is unaffected, since it only triggers on `result == "success"`, which still uses `confirmed_name` unchanged. Only `src/main.py` was modified.
-
-### Status
-Fixed.
+**Status:** Fixed.
 
 ---
 
-## Bug 9: Recognized identity could silently transfer to a different/swapped face during an active liveness challenge (proxy bypass)
+### Bug 10: Dashboard smart refresh could miss changes or serve a stale cached response
 
-### Bug
-A serious anti-proxy hole: a student could be correctly recognized once, then swap in a different face (an unregistered face, another student's photo, or a phone screen) and still have the liveness challenge complete under the *first* recognized identity. Demonstrated bypass: recognize a real face as a registered student, hide it, bring it back into frame to get re-recognized, then quickly hold up a phone image of a different person at the same screen position — the bounding box and the eventual confirmed identity kept using the real student's name even though a different face was now performing the head-movement/blink challenge.
+**Bug:** Smart refresh worked "sometimes" — a new attendance row was occasionally not detected without a manual reload, and a lecturer review made in one tab was never reflected in another tab/device at all.
 
-### Where
-`src/main.py`, `CheckinSession` — `identified_name`/`last_known_name` tracking in `process_frame`, and the `"passed"` branch that derives `confirmed_name`.
+**Cause:** `get_attendance_version()` derived its change-detection token from `logs/attendance.csv`'s filesystem `mtime` + size only, which (a) never reflected changes to `logs/reviews.csv` (a review action writes a completely different file), and (b) had no explicit `Cache-Control` headers on `/status`, leaving it exposed to browser/proxy heuristic caching for a repeatedly-polled identical URL. Separately, a change detected while the lecturer was mid-interaction only re-applied on the *next* scheduled poll tick, up to `REFRESH_SECONDS` late.
 
-### Cause
-`identified_name` (and `last_known_name`) were **sticky with no re-validation**: once set from a single confident recognition frame, nothing ever cleared them if a later frame showed a different face or `"Unknown"` — they only ever got *overwritten* by another confident match, never invalidated by a mismatch. Meanwhile the challenge's pass/fail signal comes purely from mediapipe's blink/head-pose on whatever face is *currently* in frame, with no awareness of identity at all. The two signals were only ever glued together through the stale `identified_name`, so recognizing a face once was enough to bind that name to the rest of the attempt, regardless of who (or what image) was actually performing the challenge.
+**Fix:** Rebuilt `get_attendance_version()` from actual content — row count, the latest row's own fields, `logs/reviews.csv`'s size, and the newest snapshot filename — tolerant of a mid-write partial trailing row (never raises; retries next poll). Added explicit `Cache-Control: no-store, no-cache, must-revalidate, max-age=0` / `Pragma: no-cache` response headers, plus `cache: "no-store"` and a cache-busting query parameter on the client fetch. Added a `focusout` listener and explicit hooks on modal close so a pending reload applies the instant interaction ends, not on the next timer tick. A review action now also updates the acting tab's own `knownVersion` after applying its in-place UI update, so it doesn't also trigger a redundant full-page reload on itself moments later.
 
-### Fix
-Added a conservative identity-liveness continuity guard, `CheckinSession._update_identity_continuity()` (see [[decisions]] Decision 11 for the design rationale):
-- Once an identity is locked in for the attempt, a later single-face recognition check only counts as continuous if it returns the **same name** *and* stays spatially close to the last confirmed face position (center-distance ≤ 35% of frame width — a deliberately simple check, not real object tracking).
-- Up to 2 consecutive mismatched checks are tolerated (mirroring the existing single-bad-frame anti-flicker slack from Bug 1), so one stray misdetection during a head turn doesn't wipe a legitimate student's identity.
-- On the 3rd consecutive mismatch, `identified_name`/`last_known_name`/the tracked face position are all cleared and the challenge restarts from scratch (fresh direction + fresh timer) — the identity must be re-earned by a continuously present, matching face.
-- Separately, the `"passed"` branch now only confirms `identified_name` when `identity_mismatch_streak == 0` **at that exact instant**, closing a narrow race window where a challenge could complete during the tolerance grace period, just before the streak formally cleared the identity.
-- A brief "Face changed or lost, please keep the same face in frame" message shows on-frame and via `checkin_app`'s status banner when continuity breaks.
+**Status:** Fixed.
 
-Verified (via `CheckinSession` driven with synthetic recognition results, no camera needed): a real recognition followed by a swap to `"Unknown"` at the same position clears the identity within 3 checks and never confirms mid-grace-period; a single stray misdetection does not falsely reset a legitimate student; swapping to a *different* registered student's face is also blocked; a large spatial jump alone breaks continuity even if the name happened to still match. A minimal self-check for the geometric threshold lives in `src/test_face_continuity.py`. Multi-face blocking (Bug 5 / Decision 10) is unaffected — this guard only runs pre-lock on single-face frames and defers to the existing multi-face pause otherwise. Only `src/main.py` was modified (plus the new standalone `src/test_face_continuity.py`).
+---
 
-### Status
-Fixed.
+### Bug 11: Disabling the session-picker `<select>` elements during skeleton loading silently stripped form data
+
+**Bug:** Discovered while verifying the `checkin_app` session-picker skeleton loading state: submitting the picker sometimes re-rendered the picker with a validation error instead of starting the session, even though a valid class/week had been selected.
+
+**Cause:** The skeleton-loading code disabled the picker's `<select>` elements (intending to prevent further interaction) before submitting the form. A disabled form control is excluded from the browser's submitted form data entirely, so `subject`/`week` were silently dropped from the `POST /start` body, and the server correctly rejected the resulting incomplete submission.
+
+**Fix:** Stopped disabling the `<select>` elements. Hiding the entire picker container (already done) already prevents further interaction with them; only the submit button (whose value isn't read server-side) is safely disabled.
+
+**Status:** Fixed.
+
+---
+
+### Bug 12: Duplicate check-in ran the full liveness challenge before being downgraded
+
+**Bug:** A student who had already successfully checked in during the current session could still complete an entire second liveness challenge and see "ATTENDANCE CONFIRMED" — the duplicate was only caught afterward, silently, when `attendance_logger.log_attendance()` downgraded the CSV row to a failed duplicate. The lecturer-visible message and the actually-recorded outcome disagreed, and a full challenge ran for no reason.
+
+**Cause:** Duplicate detection existed only inside `log_attendance()`, called once at the very end of an attempt — there was no check earlier in `CheckinSession` to short-circuit an attempt for a student already known to be checked in.
+
+**Fix:** Added `CheckinSession._check_duplicate_checkin()`, called as soon as the recognized identity is stable (see [[decisions]] Decision 12), which reuses `attendance_logger.has_success_this_session()` and locks the attempt directly into a new `duplicate_checkin` terminal state — skipping the liveness challenge entirely — with a clear "already checked in" message and a CSV row logged directly as `failed` / `duplicate check-in this session`.
+
+**Status:** Fixed.
+
+---
+
+## Known Issues
+
+- **`identity_mismatch` terminal state is unreachable.** It is retained in `CheckinSession`'s state machine but its only trigger was the identity re-verification during the voice-listening phase, which has been removed (see [[decisions]] Decision 7). Kept so it can be rewired if the voice challenge is reintegrated.
+- **Live video-call replay is not detected.** A live video call of the real, registered student — held up to the camera — can genuinely blink and turn its head on command, so it passes both the continuity guard (same face, same position) and the liveness challenge. This is a distinct threat from the swapped-photo/face-swap loophole Decision 11 closes, and is not yet addressed. See Future Improvements below.
+
+## Future Improvements
+
+- **Screen/replay detection** (e.g. moiré-pattern or screen-reflection detection) to catch the live video-call replay case above.
+- **Move attendance storage from CSV to SQLite** if querying needs grow beyond what CSV comfortably supports (see [[decisions]] Decision 2).
+- **Reintegrate the voice challenge** (`src/voice_challenge.py`), currently built but unused (see [[decisions]] Decision 7), as an additional active liveness factor if flow reliability concerns are resolved.
 
 ---
 
@@ -214,4 +159,5 @@ Fixed.
 - [[roadmap]]
 - [[decisions]]
 - [[testing]]
+- [[report]]
 - [[CLAUDE]]

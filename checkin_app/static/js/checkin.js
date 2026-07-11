@@ -63,11 +63,12 @@
 
     // Maps CheckinSession.flow_phase (src/main.py) to a restrained visual tone.
     // null/"liveness_success" -> neutral/in-progress; "confirmed" -> success;
-    // "not_recognized" -> warning (ambiguous, not necessarily wrong);
+    // "not_recognized"/"duplicate_checkin" -> warning (ambiguous or already
+    // handled, not a failed identity/liveness check);
     // "liveness_failed"/"identity_mismatch" -> failure.
     function statusClassForPhase(phase) {
         if (phase === 'confirmed') return 'status-success';
-        if (phase === 'not_recognized') return 'status-warning';
+        if (phase === 'not_recognized' || phase === 'duplicate_checkin') return 'status-warning';
         if (phase === 'liveness_failed' || phase === 'identity_mismatch') return 'status-failure';
         return ''; // neutral: no active phase yet, or mid-challenge (liveness_success)
     }

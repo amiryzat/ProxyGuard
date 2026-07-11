@@ -151,6 +151,84 @@ Accepted.
 
 ---
 
+## Decision 12: Detect duplicate check-in before running the liveness challenge
+
+### Decision
+Check whether the currently, confidently recognized student already has a successful check-in for the current `session_id` as soon as their identity is stable (continuity intact — see Decision 11), *before* letting the blink/head-movement liveness challenge run to completion. If they already checked in, lock the attempt directly into a new terminal state, `duplicate_checkin`, bypassing the liveness challenge entirely, rather than letting it run and only discovering the duplicate afterward in `attendance_logger.log_attendance()`'s downgrade step.
+
+### Reason
+Previously, a second attempt by an already-checked-in student ran the *entire* liveness challenge, displayed "ATTENDANCE CONFIRMED", and only got silently downgraded to a failed duplicate once `log_attendance()` was called — an inconsistency between what the student saw and what was actually recorded, and wasted time running a challenge whose result would be discarded regardless. Reusing the existing `attendance_logger.has_success_this_session()` helper (rather than re-scanning the CSV in `main.py`) keeps duplicate detection defined in one place; the check is only run once per distinct stable identity per attempt (not on every processed frame) to avoid re-reading the CSV unnecessarily. Gating the check on the same "stable identity" condition the continuity guard already establishes — rather than a single recognition frame — avoids a false duplicate trigger from a momentary misrecognition.
+
+### Status
+Accepted.
+
+---
+
+## Decision 13: Rule-based ProxyGuard Assistant instead of an LLM
+
+### Decision
+Build the dashboard's lecturer-facing recommendation panel ("ProxyGuard Assistant") as a fixed set of deterministic rules evaluated against numbers the dashboard already computes (session analytics, review summary), rather than calling an external LLM/AI API or accepting free-text chat input.
+
+### Reason
+The panel's job is decision support for an attendance-integrity tool — every recommendation must be explainable, reproducible, and traceable to a concrete rule (e.g. "N duplicate check-in records this session"), which a fixed rule set gives for free and an LLM cannot guarantee. It also avoids an external network dependency, per-call cost, and latency for a feature that only ever needs to reason over data already sitting in `attendance.csv`/`reviews.csv`. Wording is deliberately hedged ("possible proxy risk", "manual review recommended") rather than accusatory, since this is decision support, never an automatic verdict — a property that is much easier to guarantee and audit in a rule-based system.
+
+### Status
+Accepted.
+
+---
+
+## Decision 14: Dashboard smart refresh via polling, not WebSockets
+
+### Decision
+Have `dashboard.js` poll a lightweight `/status` endpoint every few seconds and only reload the page when a content-derived version token changes, rather than adding a WebSocket (or Server-Sent Events) channel for push-based updates.
+
+### Reason
+The dashboard is a single-lecturer, low-frequency-update tool (attendance rows arrive on the order of one every several seconds at most, driven by a student physically checking in) — polling every few seconds is indistinguishable in practice from push-based updates at this data rate, and needs no new server infrastructure (a persistent connection, reconnect/backoff logic, or a message broker) for a Flask app that otherwise has none. The version token itself was hardened to be content-derived (row count, latest row fields, `reviews.csv` size, newest snapshot name) rather than relying on filesystem `mtime` alone, so it reliably reflects both new attendance rows and lecturer review changes; explicit no-cache headers and a `cache: "no-store"` fetch close the remaining gap where a browser/proxy might otherwise serve a stale polled response.
+
+### Status
+Accepted.
+
+---
+
+## Decision 15: Lecturer review requires an explicit Accept/Suspicious decision, stored separately from the raw log
+
+### Decision
+Add a review workflow to the dashboard where a lecturer must explicitly mark each Attempts row **Accepted** or **Suspicious** (with an optional note) — nothing is ever auto-accepted or auto-flagged into a final state. Store these decisions in a new, independent file, `logs/reviews.csv`, keyed by a deterministic hash of the attendance row's own identifying fields, rather than adding review columns to `logs/attendance.csv` itself.
+
+### Reason
+`logs/attendance.csv` is the raw, system-generated record produced by the check-in engine; mixing lecturer judgment into the same file would blur "what the system observed" with "what a human decided about it," and would require reshaping a file every other module already reads as an opaque append-only log. A separate file keeps `attendance_logger.py` and `pattern_flagger.py` completely unaware of review state (no changes needed to either), while still letting the dashboard join review status onto each row for display, filtering, and the ProxyGuard Assistant's rules. Requiring an explicit human decision (rather than, say, auto-accepting anything not flagged) keeps the system in a pure decision-support role rather than a pass/fail authority.
+
+### Status
+Accepted.
+
+---
+
+## Decision 16: Separate CSS and JavaScript from HTML templates in both Flask apps
+
+### Decision
+Keep all styling in `static/css/*.css` and all client-side behavior in `static/js/*.js` for both `dashboard/` and `checkin_app/`, rather than inlining `<style>`/`<script>` blocks inside the Jinja templates.
+
+### Reason
+Both apps grew substantially past their first pages (tabs, filters, modals, a floating assistant, smart refresh, a session picker with a skeleton loading state) — inline styles/scripts scattered across several templates would duplicate or drift out of sync quickly, and make it hard to enforce one consistent design system (`docs/ui-references/DESIGN.md`) across both apps. Separate files also let each concern (markup vs. presentation vs. behavior) be reviewed and edited independently, matching the project's broader "keep functions/files small and independent" convention.
+
+### Status
+Accepted.
+
+---
+
+## Decision 17: Client-side skeleton loading for check-in session startup
+
+### Decision
+When the lecturer submits the session picker in `checkin_app/`, immediately show a full check-in-page skeleton (shimmering placeholders matching the real page's layout) instead of leaving the picker page showing no feedback while the blocking `POST /start` prepares the session and camera (~20s). On the live check-in page itself, show the same skeleton by default and reveal the real camera feed only once the MJPEG stream's `<img>` has fired a genuine `load` event *and* `/status` reports the station active — never on a fixed timeout for the normal case (a timeout is used only to detect genuine startup failure).
+
+### Reason
+Session/camera startup is slow enough (loading face encodings, opening the webcam) that the picker page looked frozen, which reads as broken even though it was still working. A client-side skeleton gives immediate feedback with no backend changes — the existing blocking `/start` naturally provides the "wait" the skeleton covers, so no new async status route was needed (kept in line with "prefer the smallest change that solves the problem"). Gating the reveal on a real frame *and* a real active status (rather than a timer) avoids ever showing a black/empty camera box, and avoids revealing "ready" before the camera has actually produced usable video.
+
+### Status
+Accepted.
+
+---
+
 ## Related Documentation
 
 - [[project-overview]]
@@ -158,4 +236,5 @@ Accepted.
 - [[architecture]]
 - [[testing]]
 - [[bugs]]
+- [[report]]
 - [[CLAUDE]]

@@ -3,60 +3,88 @@
 This document explains the high-level system architecture of ProxyGuard.
 
 ## System Overview
-ProxyGuard uses a local webcam-based pipeline to perform face recognition, liveness detection (blink + head movement), attendance logging, and suspicious pattern flagging.
+ProxyGuard uses a local webcam-based pipeline to perform face recognition, liveness detection (blink + head movement), session-scoped duplicate detection, attendance logging, and suspicious pattern flagging, surfaced to a lecturer through a separate review dashboard.
 
 A voice challenge was previously part of the live pipeline but has been removed from the flow to prioritize reliability at the current proposal stage. Its module (`src/voice_challenge.py`) is retained intact and could be reintegrated later; see [[decisions]].
 
-The system is designed as separate Python modules inside `src/`, with each module kept independent and testable. The modules are combined through `src/main.py`, which controls the live check-in flow.
+The system is designed as separate Python modules inside `src/`, with each module kept independent and testable. The modules are combined through `src/main.py`, which defines the shared check-in engine (`CheckinSession`) driving the live check-in flow.
 
-A separate Flask web app in `dashboard/` provides a lecturer-facing view over the attendance log. It is read-only and reuses the existing flagging logic rather than duplicating it (see the Lecturer Dashboard section below).
+Two standalone Flask apps sit on top of `src/`: `checkin_app/` (student-facing check-in kiosk) and `dashboard/` (lecturer-facing, read-only review UI). Both reuse `src/` modules directly rather than duplicating logic.
 
-## System Flow
+## Check-in Pipeline
 
-1. Webcam captures a live video frame.
-2. Face detection locates the face in the frame.
-3. Face recognition compares the detected face against registered student reference images.
-4. **Exactly one face is required** for the challenge to run — if more than one face is detected, the challenge pauses with an on-screen warning instead of progressing (see [[decisions]] Decision 10).
-5. Once a face is recognized, an **identity-liveness continuity guard** requires later recognition checks to keep matching that same face (name + position) for the rest of the attempt, or the identity is cleared and the challenge restarts — this prevents a recognized identity from silently transferring to a swapped-in face/photo (see [[decisions]] Decision 11).
-6. Blink detection runs continuously using MediaPipe Face Mesh.
-7. A randomized head movement challenge, requiring a real blink during the same window, verifies active physical response.
-8. On passing, a recognized face is confirmed directly (only if identity continuity held to that instant); an unrecognized one ends as "not recognized".
-9. Attendance is logged with result and reason — a recognized student who fails liveness is still logged under their real name, not "Unknown" (see [[bugs]] Bug 8) — and a verification snapshot of the frame is saved.
-10. Suspicious attendance patterns are flagged for lecturer review.
+```
+Session Picker (checkin_app setup page)
+        ↓
+Check-in UI (live MJPEG page + skeleton loading)
+        ↓
+Face Detection (src/face_recognizer.py / face_detector.py)
+        ↓
+Identity Verification (face_recognizer -> recognize_face)
+        ↓
+Active Face Continuity (anti-proxy-swap guard, Decision 11)
+        ↓
+Duplicate Check (has_success_this_session, Decision 12)
+        ↓
+Liveness Challenge (blink + head movement)
+        ↓
+Attendance Decision (confirmed / not_recognized / liveness_failed / duplicate_checkin)
+        ↓
+Attendance Logger (logs/attendance.csv + logs/snapshots/)
+        ↓
+Dashboard (dashboard/app.py — read-only review UI)
+        ↓
+Lecturer Review (Accept / Suspicious + note, logs/reviews.csv)
+        ↓
+ProxyGuard Assistant (rule-based recommendations over the same data)
+```
 
-(The voice challenge and the mid-challenge identity re-verification that previously sat between steps 7 and 9 have been removed from the live flow — see the note under System Overview.)
+1. **Session Picker** — the lecturer selects a class subject and week on `checkin_app/`'s setup page; `session_id` is built from that selection (see Session Identity below). Submitting immediately shows a full-page skeleton loading state while the session/camera are prepared (see Student Check-in Web App below).
+2. **Check-in UI** — the live check-in page streams the webcam (captured and processed server-side) into the browser as MJPEG; the real feed is only revealed once a genuine first frame has arrived.
+3. **Face Detection** — each processed frame is scanned for face locations.
+4. **Identity Verification** — detected faces are compared against registered students' encodings (`face_recognizer.recognize_face`). **Exactly one face is required** for the challenge to run — with more than one face detected, the challenge pauses with an on-screen warning instead of progressing (see [[decisions]] Decision 10).
+5. **Active Face Continuity** — once a face is recognized, an identity-liveness continuity guard requires later recognition checks to keep matching that same face (name + position) for the rest of the attempt, or the identity is cleared and the challenge restarts. This is the project's **bounding-box transfer protection**: it prevents a recognized identity from silently transferring to a swapped-in face, another student's photo, or a phone screen (see [[decisions]] Decision 11).
+6. **Duplicate Check** — as soon as the recognized identity is stable (continuity intact, a real registered name), `CheckinSession._check_duplicate_checkin()` checks whether that student already has a successful check-in for the current `session_id` via the existing `attendance_logger.has_success_this_session()` helper. If so, the attempt is locked directly into a dedicated `duplicate_checkin` terminal state — the liveness challenge is never run to completion for a student already present (see [[decisions]] Decision 12).
+7. **Liveness Challenge** — for a non-duplicate attempt, blink detection runs continuously and a randomized head-movement challenge (with a required blink in the same window) verifies active physical response.
+8. **Attendance Decision** — on passing, a recognized face is confirmed (`confirmed`, only if continuity held); an unrecognized one ends as `not_recognized`; a timed-out challenge ends as `liveness_failed`; a stable identity already checked in ends as `duplicate_checkin` (reached without ever entering `liveness_success`).
+9. **Attendance Logger** — every terminal outcome is logged with a `result`/`reason` pair (a recognized student who fails liveness is still logged under their real name, not `"Unknown"` — see [[bugs]]), and a verification snapshot of the frame is saved to `logs/snapshots/`.
+10. **Dashboard** — a separate, read-only Flask app reads the same `logs/attendance.csv` and `logs/snapshots/` and presents them with filtering, analytics, and inline snapshots.
+11. **Lecturer Review** — the lecturer marks each Attempts row Accepted or Suspicious (with an optional note), stored independently in `logs/reviews.csv` so the raw attendance log is never modified.
+12. **ProxyGuard Assistant** — a rule-based recommendation panel reads the same session analytics and review data to surface prioritized, actionable guidance (never an automatic verdict).
 
-## Main Modules
+(The voice challenge and the mid-challenge identity re-verification that previously sat in this flow have been removed from the live flow — see the note under System Overview.)
 
-- `src/face_detector.py`  
+## Main Modules (`src/`)
+
+- `src/face_detector.py`
   Handles basic face detection using OpenCV Haar Cascade.
 
-- `src/face_recognizer.py`  
+- `src/face_recognizer.py`
   Loads known face images, generates face encodings, performs identity matching, and provides cheaper face location tracking. Matching uses a distance tolerance of 0.45 and requires a minimum margin of 0.1 between the best and second-best match; both were tightened (from 0.5 and 0.05) to reduce false accepts between visually similar students.
 
-- `src/liveness_check.py`  
+- `src/liveness_check.py`
   Handles blink detection and randomized head movement challenge using MediaPipe Face Mesh.
 
-- `src/voice_challenge.py`  
+- `src/voice_challenge.py`
   Generates a random 3-digit challenge number, records microphone input, transcribes speech, and compares spoken digits. **Currently not part of the live check-in flow** — it has been removed from `main.py` but the module is retained intact so it can be reintegrated later.
 
-- `src/class_config.py`  
-  Standalone, dependency-free module (only `datetime`) added for the Phase 1 session-restructuring feature. Holds the predefined, easily-editable `CLASS_SUBJECTS` list, the allowed week range (`WEEK_MIN`/`WEEK_MAX`, 1–14), `subject_code()`, and `build_session_id()` — the single source of truth for the `session_id` format (see System Flow and the Session Identity section below). Kept dependency-free so both `main.py`'s terminal setup and `checkin_app/`'s web setup page can import it without pulling in `cv2`/`mediapipe`.
+- `src/class_config.py`
+  Standalone, dependency-free module (only `datetime`) holding the predefined, easily-editable `CLASS_SUBJECTS` list, the allowed week range (`WEEK_MIN`/`WEEK_MAX`, 1–14), `subject_code()`, and `build_session_id()` — the single source of truth for the `session_id` format (see Session Identity below). Kept dependency-free so both `main.py`'s terminal setup and `checkin_app/`'s session picker can import it without pulling in `cv2`/`mediapipe`.
 
-- `src/attendance_logger.py`  
-  Logs attendance outcomes to CSV and prevents duplicate successful check-ins within the same session.
+- `src/attendance_logger.py`
+  Logs attendance outcomes to CSV and prevents duplicate successful check-ins within the same session (`has_success_this_session()`, `log_attendance()`), reused both by the pre-liveness duplicate check in `main.py` and by `log_attendance()`'s own internal downgrade.
 
-- `src/pattern_flagger.py`  
-  Reads attendance logs and flags repeated failures, duplicate attempts, and clustered unrecognized attempts.
+- `src/pattern_flagger.py`
+  Reads attendance logs and flags repeated failures, duplicate attempts, and clustered unrecognized attempts. Reused as-is by `dashboard/app.py` (flagged-row highlighting) and by the ProxyGuard Assistant's rules.
 
-- `src/main.py`  
-  Defines `CheckinSession`, the shared check-in engine: per-frame face recognition, liveness detection (blink + head movement), single-person enforcement, the identity-liveness continuity guard, attendance logging, and per-outcome verification snapshots, all driven through one method (`process_frame()`). Both the desktop entry point (`if __name__ == "__main__"`, which also prompts the lecturer in the terminal via `class_config.py` for a class subject and week number before building `session_id`) and `checkin_app/`'s web app construct a `CheckinSession` and feed it frames — so the two entry points share the exact same detection/liveness/logging behavior and only differ in how frames are captured and displayed (OpenCV window vs. browser MJPEG stream).
+- `src/main.py`
+  Defines `CheckinSession`, the shared check-in engine: per-frame face recognition, liveness detection (blink + head movement), single-person enforcement, the identity-liveness continuity guard, the pre-liveness duplicate check-in bypass, attendance logging, and per-outcome verification snapshots, all driven through one method (`process_frame()`). Both the desktop entry point (`if __name__ == "__main__"`) and `checkin_app/`'s web app construct a `CheckinSession` and feed it frames — so the two entry points share the exact same detection/liveness/logging behavior and only differ in how frames are captured and displayed (OpenCV window vs. browser MJPEG stream).
 
 ## Session Identity (`session_id`)
 
 `session_id` is generated once per run/session and is treated as an opaque string by every module that consumes it (`attendance_logger.py`, `pattern_flagger.py`, the snapshot filenames, and the dashboard) — none of them parse its internal structure.
 
-As of Phase 1, it is built by `class_config.build_session_id(subject, week_number)` from the current timestamp plus the selected class subject's short code and week number, rather than a bare timestamp:
+It is built by `class_config.build_session_id(subject, week_number)` from the current timestamp plus the selected class subject's short code and week number, rather than a bare timestamp:
 
 ```
 YYYY-MM-DD_HHMM_<CODE>_Week<N>
@@ -65,100 +93,136 @@ e.g. 2026-07-07_0900_CSC649_Week3
 
 This was changed because a single room/date can host multiple *different* class subjects, so a timestamp alone didn't tell a lecturer which class a set of check-ins belonged to; grouping by subject + teaching week is more useful for review than a raw timestamp. See [[decisions]] Decision 8. `<CODE>` (not the full subject name) is used to keep the id space-free and filesystem-safe, since it is also embedded directly into verification snapshot filenames (see Verification Snapshots below).
 
-Two entry points can currently build a `session_id`:
-- `src/main.py`'s terminal prompt (`prompt_session_setup()`), used by the live webcam check-in flow.
-- `checkin_app/`'s web setup page (Phase 2a — see below), which calls the same `class_config.build_session_id()` so both paths produce identically-formatted ids.
+Two entry points can build a `session_id`:
+- `src/main.py`'s terminal prompt (`prompt_session_setup()`), used by the desktop webcam check-in flow.
+- `checkin_app/`'s session picker, which calls the same `class_config.build_session_id()` so both paths produce identically-formatted ids.
 
 ## Anti-Proxy Safeguards in the Check-in Engine
 
-Beyond face recognition and the blink/head-movement liveness challenge, `CheckinSession` enforces two additional binding rules while an attempt is active (not yet locked), so both the desktop flow and `checkin_app/` get them identically:
+Beyond face recognition and the blink/head-movement liveness challenge, `CheckinSession` enforces the following while an attempt is active (not yet locked), so both the desktop flow and `checkin_app/` get them identically:
 
-- **Single-person enforcement** — the challenge only runs with exactly one face in frame. mediapipe Face Mesh is configured for a single face, so a second face present would let one person perform the challenge while a different (possibly registered) face is also visible. If more than one face is detected, the challenge pauses (timer frozen, no mediapipe processing) and a warning is shown until only one face remains. See [[decisions]] Decision 10.
-- **Identity-liveness continuity guard** — recognizing a face once is not enough to bind that identity to the rest of the attempt. Later recognition checks must keep showing the *same* name at a *similar* position (a simple center-distance check, not real object tracking) for the identity to keep counting; a small number of consecutive mismatches is tolerated, but exceeding it clears the identity and restarts the challenge. This closes a proxy loophole where a recognized identity could silently transfer to a swapped-in face or photo. See [[decisions]] Decision 11 and [[bugs]] Bug 9.
+- **Single-person enforcement (Multi-face detection)** — the challenge only runs with exactly one face in frame. mediapipe Face Mesh is configured for a single face, so a second face present would let one person perform the challenge while a different (possibly registered) face is also visible. If more than one face is detected, the challenge pauses (timer frozen, no mediapipe processing) and a warning is shown until only one face remains. See [[decisions]] Decision 10.
+- **Active face continuity / bounding-box transfer protection** — recognizing a face once is not enough to bind that identity to the rest of the attempt. Later recognition checks must keep showing the *same* name at a *similar* position (a simple center-distance check, not real object tracking) for the identity to keep counting; a small number of consecutive mismatches is tolerated, but exceeding it clears the identity and restarts the challenge. This closes a proxy loophole where a recognized identity could silently transfer to a swapped-in face or photo. See [[decisions]] Decision 11 and [[bugs]].
+- **Duplicate check before liveness** — once the identity is stable under the continuity guard above, `_check_duplicate_checkin()` looks up `has_success_this_session()` (imported from `attendance_logger.py`, not re-implemented) at most once per distinct stable identity per attempt. A match locks the attempt directly into `duplicate_checkin`, skipping the liveness challenge. See [[decisions]] Decision 12.
 - **On-screen box color coding** — each detected face's bounding box is drawn red when unrecognized/`"Unknown"` and green when recognized, so an unrecognized face (including a swapped-in one, once the continuity guard clears it) is visually obvious at a glance, in both the desktop window and the `checkin_app` browser stream.
 
 ## Lecturer Dashboard (`dashboard/`)
 
-A small, standalone Flask web app that lets a lecturer review the attendance log in the browser. It is kept in its own top-level `dashboard/` folder (not inside `src/`) so it stays separate from the core detection modules, matching the project's module-independence convention.
+A standalone Flask web app, read-only, that gives a lecturer a fast, actionable view over the attendance log. Kept in its own top-level `dashboard/` folder (not inside `src/`) so it stays separate from the core detection modules, matching the project's module-independence convention.
 
 ### Folder structure
 ```
 dashboard/
-├── app.py                # Flask app: reads the log, filters by session, flags rows, builds the summary
-└── templates/
-    └── index.html        # Single page: session dropdown, summary stat boxes, attendance table
+├── app.py                     # Flask app: all routes, data assembly, review data layer, assistant rules
+├── templates/
+│   ├── index.html             # Single page: filters, tabs, table, modals, floating assistant
+│   └── _assistant_panel.html  # Assistant summary + recommendation cards (re-rendered by /assistant_panel)
+└── static/
+    ├── css/dashboard.css      # All styling — no inline <style>, matches docs/ui-references/DESIGN.md
+    └── js/dashboard.js        # All client-side behavior — no inline <script> beyond the src tag
 ```
+HTML, CSS, and JavaScript are kept in separate files rather than inlined in templates, so each concern (markup, styling, behavior) can be edited independently and the same design system stays consistent across `dashboard/` and `checkin_app/`.
 
-### Features
-- **Present / Attempts tabs** — the attendance table is split into two tabs on one page (client-side toggle, no separate routes): **Present** shows only `result=success` rows for the selected session; **Attempts** shows only `result=failed` rows. Each tab has its own summary stat boxes, computed only from that tab's currently visible rows.
-- **Session filter** — a dropdown of all unique `session_id` values (most recent first). On first load it defaults to the most recent session rather than the whole log history; selecting another session reloads the page via a `?session=...` query parameter.
-- **Reason filter (Attempts tab only)** — a dropdown scoped to the distinct `reason` values among the *selected session's* failed rows, defaulting to "All reasons". Applies on top of the session filter, not instead of it; both dropdowns live in one `<form>` so changing either resubmits both values together, and a hidden field preserves which tab was open across the reload.
-- **Inline verification snapshots** — each row in both tabs shows a small thumbnail of its matched snapshot (click to open full-size), or a "no snapshot" placeholder if none matches. See Snapshot Matching below.
-- **Flagged row highlighting** — rows belonging to a suspicious pattern are highlighted in red, in either tab.
-- **Per-tab summary** — a row of stat boxes (total / successful / failed / flagged) above each tab's table, scoped to that tab's currently filtered rows (session + reason, where applicable).
+### Table, filters, and search
+- **Present / Attempts tabs** — a client-side toggle (no separate routes): Present shows `result=success` rows for the selected session, Attempts shows `result=failed` rows.
+- **Session filter** — a dropdown of all unique `session_id` values (most recent first), defaulting to the most recent session.
+- **Attempts-tab quick filters** — instant client-side chips (All / Successful / Failed / Flagged / Unknown / Duplicate / Liveness Failed), replacing an earlier reason dropdown for a faster, no-reload narrow.
+- **Review-status filters** — an independent chip group (All Reviews / Unreviewed / Accepted / Suspicious), combined with the quick filters rather than replacing them.
+- **Search** — a client-side name search box, shared across both tabs, persisted in `localStorage` so it survives a smart-refresh reload.
+- **CSV export** — `/export.csv` mirrors exactly what the lecturer is currently looking at (session, tab, search, quick filter, review filter), rebuilt server-side from the same row-matching predicates the client uses.
 
-### Snapshot Matching (`dashboard/app.py`)
-`find_snapshot_for_row()` reconstructs the snapshot filename prefix from a row's `session_id`, `name`, and `reason` (mirroring `build_snapshot_filename()` in `src/main.py` via a local `_slug()` helper, reimplemented rather than imported so the dashboard doesn't need to pull in `cv2`/`mediapipe`/`dlib`), and returns the file that starts with it — disambiguating same-prefix files (e.g. repeated failures) with the row's own `HH:MM:SS` time. If the strict prefix has no match, it falls back to matching on `session_id` + `reason` + the row's timestamp alone, ignoring the name segment: a failed attempt's CSV `name` and its snapshot's name segment can differ in older logs written before Bug 8's fix (the snapshot used the bad-frame-protected `last_known_name`, the CSV row used `confirmed_name`/`"Unknown"`), so the timestamp — unique per attempt — recovers the match either way. A `GET /snapshot/<filename>` route serves the matched file from `logs/snapshots/` via `send_from_directory` (path-traversal-safe).
+### Analytics and flagging
+- **Session Overview** — stat cards for total/successful/failed/flagged/duplicate/unknown/liveness-failed counts and the success rate, covering the whole selected session regardless of which tab is open.
+- **Reason Breakdown** — a bar chart of `reason` counts within the selected session, colored by a rough good/warn/bad severity.
+- **Flagged-row highlighting** reuses `src/pattern_flagger.flag_patterns()` directly — no duplicated detection logic. The same per-row flag feeds the Flagged quick filter, the Session Overview's flagged count, and the ProxyGuard Assistant's rules.
+- **Inline verification snapshots** — each row shows a thumbnail of its matched `logs/snapshots/` file (`find_snapshot_for_row()`, mirroring `build_snapshot_filename()` in `src/main.py`), or a "no snapshot" placeholder.
+- **Snapshot preview modal** — clicking a thumbnail opens a modal with the full-size image and the row's metadata (name/date/time/session/result/reason), instead of navigating away.
 
-### Reuse of `pattern_flagger.py` (no duplicated logic)
-`app.py` adds `src/` to `sys.path` and imports `pattern_flagger` directly. It calls `pattern_flagger.flag_patterns()` and reads that report (plus `pattern_flagger`'s own reason constants) to decide which visible rows are flagged — the detection logic itself is never copied or reimplemented in the dashboard. The flagged count in each tab's summary reuses the very same per-row result, so it is not recalculated separately. Because `pattern_flagger` only depends on the standard library, importing it into the dashboard stays cheap and does not pull in OpenCV or MediaPipe.
+### Lecturer review workflow
+Review decisions ("was this attempt actually suspicious?") are stored entirely separately from `logs/attendance.csv` — that file stays the raw, untouched system-generated record. `logs/reviews.csv` holds one row per reviewed attempt, keyed by a deterministic hash of the attendance row's own identifying fields (`build_review_id()`), since `attendance.csv` has no id column of its own.
+- Each Attempts row has **Accept** / **Suspicious** buttons plus an **Add/Edit note** button (opening a small note modal) — a row with no review record yet is "Unreviewed".
+- A **Review Summary** (Unreviewed / Accepted / Suspicious counts) sits above the Attempts table, updated in place after every review action with no page reload.
+- `POST /review` upserts a review record; the response updates the row's badge, note, review summary, active review filter, and the ProxyGuard Assistant panel in place.
+
+### Smart refresh
+The page polls a lightweight `/status` endpoint every few seconds instead of blindly reloading. `get_attendance_version()` builds a change-detection token from actual content — row count, the latest row's own fields, `logs/reviews.csv`'s size, and the newest snapshot filename — rather than filesystem `mtime` alone, so both new attendance rows *and* lecturer review changes (even from another tab/device) are detected reliably. `/status` sends explicit no-cache headers and the client fetches with `cache: "no-store"` plus a cache-busting query parameter, so no browser/proxy ever serves a stale response. A detected change while the lecturer is actively interacting (typing, an open dropdown, an open modal) is deferred (`pendingReload`) rather than discarded, and applied the instant the interaction ends (a `focusout` listener and explicit hooks on modal close) rather than waiting out the rest of the poll interval.
+
+### ProxyGuard Assistant
+A floating, rule-based recommendation panel (`#assistant-fab` / `#assistant-modal`), available from both the Present and Attempts tabs, opened without leaving the page:
+- **Session summary** at the top: success-rate progress bar, overall attention level (Low/Medium/High), main concern, and how many attempts still need review.
+- **Prioritized recommendation cards** (flagged/suspicious attempts, duplicate attempts, unreviewed attempts, unknown faces, liveness failures, low success rate, or a normal-session message), each resolution-aware — a card disappears once the underlying condition is resolved (e.g. all rows reviewed) rather than lingering.
+- Each card shows a priority badge, an affected-attempt count, a short "Triggered by" explanation, a compact detail line (names/times, truncated), a suggested action, and one or two action buttons (**View affected attempts**, **Open next unreviewed attempt**) that reuse the existing quick/review filter chips and table — never a second, parallel filtering or preview system.
+- Entirely **rule-based** — every recommendation comes from a fixed rule evaluated against numbers the dashboard already computes; there is no external AI API and no free-text chat input (see [[decisions]] Decision 13).
+
+### Reuse of `src/pattern_flagger.py` (no duplicated logic)
+`app.py` adds `src/` to `sys.path` and imports `pattern_flagger` directly. It calls `pattern_flagger.flag_patterns()` and reads that report (plus `pattern_flagger`'s own reason constants) to decide which visible rows are flagged; the detection logic itself is never copied or reimplemented in the dashboard. Because `pattern_flagger` only depends on the standard library, importing it into the dashboard stays cheap and does not pull in OpenCV or MediaPipe.
 
 ### Data flow
-The dashboard reads `logs/attendance.csv` (written by `attendance_logger.py`) and `logs/snapshots/` **read-only** — it never writes to or modifies either. It resolves both paths relative to its own location, mirroring `attendance_logger.py`, so it finds the same files regardless of the working directory.
+The dashboard reads `logs/attendance.csv` and `logs/snapshots/` **read-only**, and reads/writes only `logs/reviews.csv` for the review workflow — it never modifies `logs/attendance.csv`. It resolves all paths relative to its own location, mirroring `attendance_logger.py`, so it finds the same files regardless of the working directory.
 
 ### How to run
 ```
 python dashboard/app.py
 ```
-Then open `http://127.0.0.1:5001/` in a browser. Port 5001 is used instead of Flask's default 5000 because macOS AirPlay Receiver occupies port 5000 and returns a 403 for other requests. Flask must be installed in the environment (`pip install flask`).
+Then open `http://127.0.0.1:5001/` in a browser. Port 5001 is used instead of Flask's default 5000 because macOS AirPlay Receiver occupies port 5000 and returns a 403 for other requests.
 
-## Student Check-in Web App (`checkin_app/`) — setup + live check-in
+## Student Check-in Web App (`checkin_app/`)
 
-A separate, standalone Flask app for the student-facing check-in flow, kept in its own top-level `checkin_app/` folder (not inside `src/` or `dashboard/`), matching the project's module-independence convention. **Phase 2a** is the session setup step (pick a class and week → generate `session_id`); **Phase 2b** adds the live check-in page that streams the webcam into the browser and runs the full recognition + liveness + logging + snapshot flow. See [[decisions]] Decision 9.
+A separate, standalone Flask app for the student-facing check-in flow, kept in its own top-level `checkin_app/` folder, matching the project's module-independence convention. See [[decisions]] Decision 9.
 
 ### Folder structure
 ```
 checkin_app/
-├── app.py                 # Flask app: setup -> session_id -> live MJPEG check-in
-└── templates/
-    ├── setup.html          # Class-subject dropdown, week dropdown (1-14), "Start Session" button
-    ├── confirm.html        # (Phase 2a leftover; /start now goes straight to the live page)
-    └── checkin.html        # Live page: session header, MJPEG <img> stream, status text, "New check-in"
+├── app.py                         # Flask app: session picker -> session_id -> live MJPEG check-in
+├── templates/
+│   ├── setup.html                 # Session picker: class-subject dropdown, week dropdown, "Start Session"
+│   ├── checkin.html                # Live page: session header, MJPEG <img>, status text, action buttons
+│   ├── _checkin_skeleton.html      # Shared skeleton markup (see Skeleton loading below)
+│   └── confirm.html               # Unused leftover from an earlier iteration
+└── static/
+    ├── css/checkin.css            # All styling, including the skeleton shimmer
+    └── js/checkin.js               # All client-side behavior for both the picker and the live page
 ```
 
-### Features
-- **Setup page (`GET /`)** — dropdowns populated from `class_config.CLASS_SUBJECTS` and `WEEK_MIN`..`WEEK_MAX`, so the choices always match Phase 1's predefined list without duplicating it.
-- **Session start (`POST /start`)** — validates the submitted subject and week against the known Phase 1 values (never trusting raw form input); an invalid/tampered submission re-renders the setup form with an error. A valid submission calls `class_config.build_session_id()`, starts the live check-in station for that id, and redirects to the check-in page.
-- **Live check-in (`GET /checkin`, `/video_feed`, `/status`, `POST /reset`)** — the check-in page shows the class/week/`session_id`, an `<img>` pointed at the `/video_feed` MJPEG stream, a status line, and a "New check-in" button. `/status` (polled) drives the status text and enables the button only at a terminal outcome; `/reset` is the web analog of the desktop `n` key.
+### Session picker and skeleton loading
+- **`GET /`** renders `setup.html`: dropdowns populated from `class_config.CLASS_SUBJECTS` and `WEEK_MIN..WEEK_MAX`.
+- **`POST /start`** validates the submitted subject/week against the known values (never trusting raw form input), builds `session_id` via `class_config.build_session_id()`, starts the check-in station for it (loads face encodings once, opens the camera), and redirects to `/checkin`. This can take on the order of ~20s (encodings + camera warm-up).
+- Because that POST blocks until the station is ready, `checkin.js` intercepts the picker's form submit client-side: it validates the fields, disables the submit button (without disabling the `<select>` elements themselves — a disabled form control is excluded from the submitted form data, which would otherwise silently strip `subject`/`week` from the POST), hides the picker, and shows a full check-in-page skeleton (`_checkin_skeleton.html`, shared with the live page) with a "Preparing check-in session…" message — then submits the form programmatically after one paint, so the lecturer sees immediate feedback instead of an apparently frozen page.
+- On the live check-in page itself, the same skeleton is shown by default and hidden only once **both** the MJPEG `<img>`'s `load` event has fired (a genuine first camera frame decoded) **and** `/status` reports the station active — never on a fixed timeout, and never revealing a black/empty camera box in between. A timeout (30s) triggers a distinct failure state with a "Try again" action if the station never becomes ready.
+
+### Live check-in
+- **`GET /checkin`** renders the session header (class/week/`session_id`) and the skeleton/real-content pair described above.
+- **`GET /video_feed`** streams server-side-processed webcam frames as MJPEG (`multipart/x-mixed-replace`).
+- **`GET /status`** reports the current `flow_phase`, whether a reset is allowed, and the banner text — including the new `duplicate_checkin` phase, which the dashboard-shared color mapping in `checkin.js` renders with the same "warning" tone as `not_recognized` (handled, not a failure of identity/liveness).
+- **`POST /reset`** starts a fresh attempt ("New check-in").
+- **`POST /end_session`** releases the camera and clears the station (so the webcam light actually turns off) before returning to the session picker.
 
 ### Reuse of the shared check-in engine (no duplicated logic)
-`app.py` adds `src/` to `sys.path` (the same pattern `dashboard/app.py` uses) and imports `class_config` (subject list, `build_session_id`), `face_recognizer.load_known_faces`, and — for Phase 2b — `main.CheckinSession`. The web app does **not** reimplement any recognition, liveness, state-machine, logging, or snapshot logic: it drives the same `CheckinSession.process_frame` the desktop app uses, so both stay in lockstep and fixes apply once. The only web-specific code is how frames are *delivered* (webcam → MJPEG) and *displayed* (`<img>` instead of an OpenCV window).
+`app.py` imports `class_config` (subject list, `build_session_id`), `face_recognizer.load_known_faces`, and `main.CheckinSession`. It does **not** reimplement any recognition, liveness, duplicate-check, state-machine, logging, or snapshot logic: it drives the same `CheckinSession.process_frame` the desktop app uses, so both stay in lockstep and fixes apply once. The only web-specific code is how frames are *delivered* (webcam → MJPEG), *displayed* (`<img>` instead of an OpenCV window), and the skeleton-loading UX described above.
 
 ### Frame handling / streaming (performance)
-Frames are captured and processed **server-side**; the browser only displays them. The MJPEG generator reads the webcam, calls `session.process_frame(...)`, JPEG-encodes the annotated frame, and yields it as a `multipart/x-mixed-replace` part. Processing resolution and display resolution are **decoupled** inside the shared `process_frame`: it downscales internally for the heavy steps (recognition every 3rd frame on a 0.25x copy, mediapipe on a 0.5x copy) and draws the resulting boxes/labels back onto the full-size frame, which is what gets streamed. So the capture size only meaningfully drives the per-frame JPEG **encode** cost, not the recognition/mediapipe cost — the web app can capture at a clear size without paying for it in processing. The streaming path is tuned for a fanless CPU-only machine (see [[bugs]] Bug 6 and Bug 7):
-- **Capture (and stream) at 1280×720** (`CAP_PROP_FRAME_WIDTH/HEIGHT`) — clear and demo-friendly; the internal 0.25x recognition copy is then 320×180, the same input size the desktop flow has always used.
-- **JPEG quality 80** for the stream (vs. OpenCV's default 95) — presentable for a demo, still cheaper than default.
-- **~20 FPS cap** on the generator loop so it can't peg the CPU (which throttles a fanless Air).
-- **Single active stream**: a `_stream_generation` counter ensures only the newest `/video_feed` generator drives the camera; older ones (from reloads/reconnects) exit, preventing thread/handle accumulation across long sessions. All frame access is serialized under `_station_lock`.
+Frames are captured and processed **server-side**; the browser only displays them. Processing resolution and display resolution are **decoupled** inside the shared `process_frame` (recognition on a 0.25x copy, mediapipe on a 0.5x copy, boxes drawn back onto the full-size frame), so the capture size only meaningfully drives the per-frame JPEG **encode** cost:
+- **Capture (and stream) at 1280×720**, JPEG quality 80, ≤20 FPS generator cap.
+- **Single active stream**: a `_stream_generation` counter ensures only the newest `/video_feed` generator drives the camera; older ones (reloads/reconnects) exit. All frame access is serialized under `_station_lock`.
 
-These knobs are `checkin_app`-only (named constants at the top of `app.py`); the desktop flow keeps native capture and its native `cv2.imshow` window. (Bug 6's first cut lowered capture to 640×480 and quality to 60, which over-blurred the preview; Bug 7 restored display quality while keeping processing performance separate.)
+See [[bugs]] for the tuning history of these values.
 
 ### Data / resource model
-One physical webcam ⇒ one active check-in station: `_start_station` lazily opens the camera once and reuses it, and `/reset` reuses the same `CheckinSession` (and its one mediapipe `FaceMesh`) rather than recreating them per attempt. Attendance rows and verification snapshots are written by the shared engine to the same `logs/attendance.csv` and `logs/snapshots/` the desktop app uses, in the identical format.
+One physical webcam ⇒ one active check-in station: `_start_station` lazily opens the camera once and reuses it, and `/reset` reuses the same `CheckinSession` (and its one mediapipe `FaceMesh`) rather than recreating them per attempt. `/end_session` is the only path that releases the camera and drops the station entirely. Attendance rows and verification snapshots are written by the shared engine to the same `logs/attendance.csv` and `logs/snapshots/` the desktop app uses, in the identical format.
 
 ### How to run
 ```
 python checkin_app/app.py
 ```
-Then open `http://127.0.0.1:5002/` in a browser. Port 5002 is used to avoid clashing with the lecturer dashboard (5001) and macOS AirPlay Receiver (5000). Runs with `threaded=True` (so the long-lived stream doesn't block other routes) and no debug reloader (it would spawn a second process fighting over the webcam) — so restart the process to pick up code changes.
+Then open `http://127.0.0.1:5002/` in a browser. Port 5002 avoids clashing with the lecturer dashboard (5001) and macOS AirPlay Receiver (5000). Runs with `threaded=True` and no debug reloader (it would spawn a second process fighting over the webcam) — restart the process to pick up code changes.
 
 ## Verification Snapshots
 
-At every terminal check-in outcome (`confirmed`, `not_recognized`, `liveness_failed`; `identity_mismatch` is retained as a terminal state but is currently unreachable now that the voice listening phase is gone), `CheckinSession` saves a snapshot of the webcam frame to `logs/snapshots/` (created automatically if missing), at the same moment attendance is logged for that outcome. Both the desktop flow and `checkin_app/` write to the same folder in the same format, since both drive the same `CheckinSession`.
+At every terminal check-in outcome (`confirmed`, `not_recognized`, `liveness_failed`, `duplicate_checkin`; `identity_mismatch` is retained as a terminal state but is currently unreachable now that the voice listening phase is gone), `CheckinSession` saves a snapshot of the webcam frame to `logs/snapshots/` (created automatically if missing), at the same moment attendance is logged for that outcome. Both the desktop flow and `checkin_app/` write to the same folder in the same format, since both drive the same `CheckinSession`.
 
 - **Every outcome is captured, successes included** — not just failures. Because a check-in can pass the liveness checks and still be a photo of someone else held up to the camera, the saved image gives a lecturer a way to manually verify the actual face after the fact.
 - **A pre-overlay frame is saved.** `CheckinSession` keeps an un-annotated copy of each frame taken before any bounding boxes or status text are drawn, so the face in the snapshot is unobstructed.
-- **File naming** combines the `session_id`, the identity (`last_known_name` — the bad-frame-protected last confidently recognized identity — if one was established this attempt, otherwise `unknown`), the outcome reason as actually written to the CSV (not the pre-duplicate-downgrade reason, see [[bugs]] Bug 4), and an `HHMMSS` timestamp, e.g. `2026-07-07_0900_CSC649_Week3_unknown_liveness_timeout_171322.jpg` (the `session_id` portion now includes the class code and week per the Phase 1 format above). The timestamp keeps multiple check-ins within one session from overwriting each other. The attendance CSV row uses the same fallback logic (`confirmed_name` on success, else `last_known_name`, else `"Unknown"` — see [[bugs]] Bug 8), so a recognized student who fails liveness has their real name in both the snapshot filename and the CSV row, not just the former.
+- **File naming** combines the `session_id`, the identity (`last_known_name` if one was established this attempt, otherwise `unknown`), the outcome reason as actually written to the CSV (not any pre-downgrade reason — see [[bugs]]), and an `HHMMSS` timestamp, e.g. `2026-07-07_0900_CSC649_Week3_unknown_liveness_timeout_171322.jpg`. For a duplicate check-in, the reason segment is `duplicate_check_in_this_session`, matching the CSV row exactly.
 
 Snapshots are a manual review aid only; the system never uses them to auto-accept or auto-reject a check-in.
 
@@ -168,8 +232,9 @@ Snapshots are a manual review aid only; the system never uses them to auto-accep
 - Keep functions small and testable.
 - Avoid storing raw voice data.
 - Avoid storing side-face images.
-- Persisted data: frontal reference images, face encodings, attendance logs, and per-outcome verification snapshots (see Verification Snapshots). Still no raw voice data and no side-face images.
+- Persisted data: frontal reference images, face encodings, attendance logs, lecturer review decisions, and per-outcome verification snapshots. Still no raw voice data and no side-face images.
 - Prefer clarity over premature optimization because this is an academic prototype.
+- Keep each Flask app's HTML, CSS, and JavaScript in separate files, following one shared design system (see `docs/ui-references/DESIGN.md`).
 
 ## Related Documentation
 
@@ -178,4 +243,5 @@ Snapshots are a manual review aid only; the system never uses them to auto-accep
 - [[decisions]]
 - [[testing]]
 - [[bugs]]
+- [[report]]
 - [[CLAUDE]]

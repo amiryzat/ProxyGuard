@@ -23,7 +23,7 @@ from liveness_check import (
     get_head_pose,
     mp_face_mesh
 )
-from attendance_logger import log_attendance
+from attendance_logger import log_attendance, has_success_this_session, DUPLICATE_REASON
 from class_config import CLASS_SUBJECTS, WEEK_MIN, WEEK_MAX, build_session_id
 
 random.seed(os.urandom(8))
@@ -243,11 +243,23 @@ class CheckinSession:
         self.pending_reverify = False
         self.continuity_warning_until = None
 
+        # Which identity (if any) has already been checked against
+        # has_success_this_session() this attempt, so a duplicate lookup isn't
+        # re-run on every processed frame while the same stable identity is
+        # held -- see the duplicate-check-in bypass in process_frame.
+        self.duplicate_checked_name = None
+
         # flow_phase drives what's on screen after the head-movement/blink
         # challenge locks in: liveness_success -> confirmed, or
         # liveness_success -> not_recognized, or liveness_failed. confirmed /
-        # not_recognized / liveness_failed are terminal (wait for a reset);
-        # liveness_success advances on its own timer.
+        # not_recognized / liveness_failed / duplicate_checkin are terminal
+        # (wait for a reset); liveness_success advances on its own timer.
+        # duplicate_checkin is reached directly, bypassing liveness_success
+        # entirely, the moment a confidently-recognized, continuity-stable
+        # identity is found to already have a successful check-in this
+        # session -- no point running the liveness challenge for someone
+        # already present. See _update_identity_continuity for how
+        # identified_name earns that stability.
         #
         # identity_mismatch is retained as a terminal state but is currently
         # unreachable: its only trigger was the identity re-verification during
@@ -264,7 +276,7 @@ class CheckinSession:
     def can_reset(self):
         """True once the current attempt reached a terminal outcome."""
         return self.check_locked and self.flow_phase in (
-            "confirmed", "not_recognized", "liveness_failed", "identity_mismatch"
+            "confirmed", "not_recognized", "liveness_failed", "identity_mismatch", "duplicate_checkin"
         )
 
     def close(self):
@@ -388,6 +400,32 @@ class CheckinSession:
         if time.time() - self.last_confirmed_time > IDENTITY_HOLD_SECONDS:
             self._clear_active_identity()
 
+    def _check_duplicate_checkin(self):
+        """
+        Duplicate check-in bypass, run pre-lock right after
+        _update_identity_continuity on every processed frame. Once
+        identified_name is stable -- set and held by the continuity guard
+        above, meaning exactly one face, a real registered name, and
+        continuity intact (see _update_identity_continuity) -- check whether
+        that student already has a successful check-in this session BEFORE
+        letting the liveness challenge run to completion, so time isn't spent
+        on a challenge for someone already present. Reuses
+        has_success_this_session() rather than re-scanning attendance.csv
+        here. Looked up at most once per distinct stable identity per
+        attempt (duplicate_checked_name), not on every processed frame while
+        the challenge continues for a non-duplicate student.
+        """
+        if not (self.identified_name and self.identified_name != "Unknown"):
+            return
+        if self.duplicate_checked_name == self.identified_name:
+            return
+        self.duplicate_checked_name = self.identified_name
+        if has_success_this_session(self.identified_name, self.session_id):
+            self.check_locked = True
+            self.locked_status = "duplicate"
+            self.flow_phase = "duplicate_checkin"
+            self.confirmed_name = None
+
     def process_frame(self, frame):
         """
         Run one frame through recognition + liveness + the flow_phase state
@@ -433,6 +471,7 @@ class CheckinSession:
                 # name seen at any point this attempt. See
                 # _update_identity_continuity and docs/bugs.md.
                 self._update_identity_continuity(self.last_names, self.last_face_locations, frame_width)
+                self._check_duplicate_checkin()
             # Once locked, last_known_name is deliberately left as-is (its
             # anti-flicker/snapshot-naming role, see docs/bugs.md Bug 1/2) --
             # only the pre-lock continuity guard above can change it.
@@ -609,15 +648,28 @@ class CheckinSession:
                 bottom_color = (0, 0, 255)
                 show_restart_hint = True
 
+            elif self.flow_phase == "duplicate_checkin":
+                bottom_msg = f"ALREADY CHECKED IN: {self.last_known_name}"
+                bottom_color = (0, 165, 255)
+                show_restart_hint = True
+
             self.banner = bottom_msg
 
-            if not self.outcome_logged and self.flow_phase in ("confirmed", "not_recognized", "liveness_failed", "identity_mismatch"):
+            if not self.outcome_logged and self.flow_phase in (
+                "confirmed", "not_recognized", "liveness_failed", "identity_mismatch", "duplicate_checkin"
+            ):
                 if self.flow_phase == "confirmed":
                     log_result, log_reason = "success", "confirmed"
                 elif self.flow_phase == "not_recognized":
                     log_result, log_reason = "failed", "face not recognized"
                 elif self.flow_phase == "liveness_failed":
                     log_result, log_reason = "failed", "liveness timeout"
+                elif self.flow_phase == "duplicate_checkin":
+                    # Already known to be a duplicate (that's how this phase was
+                    # reached -- see the bypass above), so this is logged
+                    # directly rather than passing "success" and relying on
+                    # log_attendance's own downgrade check to re-derive it.
+                    log_result, log_reason = "failed", DUPLICATE_REASON
                 else:  # identity_mismatch (retained but currently unreachable)
                     log_result, log_reason = "failed", "identity mismatch"
 
