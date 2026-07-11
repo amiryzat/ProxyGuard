@@ -258,3 +258,79 @@ body {
 .action-area .btn-ghost {
     text-align: center;
 }
+
+/* ---- Skeleton loading state (session startup) ---------------------------
+   Shown two ways: covering the setup picker the instant "Start Session" is
+   clicked (the POST blocks on loading face-recognition data + opening the
+   camera, which can take ~20s -- see checkin_app/app.py's _start_station()),
+   and on the check-in page itself until the MJPEG stream's first frame
+   arrives and /status confirms the station is active -- see checkin.js.
+   Soft gray shimmer only, sized to match the real cards/badge/video/buttons
+   so nothing jumps when the real content replaces it. */
+
+.skel {
+    background: linear-gradient(100deg, var(--color-hairline) 30%, var(--color-canvas) 50%, var(--color-hairline) 70%);
+    background-size: 250% 100%;
+    border-radius: var(--radius-small);
+    animation: skeleton-shimmer 1.8s ease-in-out infinite;
+}
+@keyframes skeleton-shimmer {
+    0% { background-position: 250% 0; }
+    100% { background-position: -250% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .skel {
+        animation: none;
+        background: var(--color-hairline);
+    }
+}
+
+.skel-title {
+    width: 220px;
+    max-width: 60%;
+    height: 28px;
+    border-radius: var(--radius-nested);
+}
+
+.skel-line {
+    height: 14px;
+}
+.skel-line-meta {
+    width: 140px;
+}
+.skel-line-status {
+    width: 240px;
+    max-width: 70%;
+    height: 20px;
+    margin: 0 auto;
+}
+
+.skel-badge {
+    width: 120px;
+    height: 22px;
+    border-radius: var(--radius-badges);
+}
+
+/* aspect-ratio matches the real 1280x720 capture, so swapping the skeleton
+   for the real <img> (width:100%, height:auto) doesn't shift page height. */
+.skel-video {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    border-radius: var(--radius-nested);
+}
+
+.skel-button {
+    width: 100%;
+    height: 38px;
+    border-radius: var(--radius-buttons);
+}
+.skel-button-ghost {
+    opacity: 0.7;
+}
+
+.skeleton-error {
+    text-align: center;
+}
+.skeleton-error .error {
+    margin-bottom: 12px;
+}

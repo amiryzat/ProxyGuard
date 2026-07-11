@@ -1,0 +1,42 @@
+{# Shared check-in-page skeleton, used two ways:
+   1. setup.html shows this (initially hidden) the instant "Start Session" is
+      clicked, covering the picker while the blocking POST /start prepares
+      the session and camera -- see checkin_app/app.py's _start_station(),
+      which can take ~20s (loading face encodings + opening the webcam).
+   2. checkin.html shows this initially (visible), before the real content,
+      hiding it only once the MJPEG stream's first frame has arrived AND
+      /status confirms the station is active -- see checkin.js.
+   One partial so both places render an identical skeleton shape instead of
+   two near-duplicate copies that could drift apart. #}
+<div class="page-container" id="checkin-skeleton">
+    <h1 class="page-title">ProxyGuard Check-in</h1>
+    <p class="page-subtitle" id="skeleton-status-text">Preparing check-in session&hellip;</p>
+
+    <div class="card page-section">
+        <div class="session-meta-row">
+            <div class="skel skel-line skel-line-meta"></div>
+            <div class="skel skel-badge"></div>
+        </div>
+    </div>
+
+    <div class="card page-section status-card">
+        <div class="skel skel-line skel-line-status"></div>
+    </div>
+
+    <div class="card page-section">
+        <div class="skel skel-video"></div>
+    </div>
+
+    <div class="action-area">
+        <div class="skel skel-button"></div>
+        <div class="skel skel-button skel-button-ghost"></div>
+    </div>
+
+    {# Shown only if startup doesn't complete within a reasonable timeout
+       (requirement 7) -- never based on a fixed timeout for the normal case,
+       only as a failure fallback so the skeleton doesn't spin forever. #}
+    <div class="card page-section skeleton-error" id="skeleton-error" hidden>
+        <p class="error" id="skeleton-error-text">Taking longer than expected to start the session.</p>
+        <button type="button" class="btn btn-ghost" id="skeleton-retry-btn">Try again</button>
+    </div>
+</div>

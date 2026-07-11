@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/checkin.css') }}">
 </head>
 <body>
-    <div class="page-container">
+    <div class="page-container" id="picker-container">
         <h1 class="page-title">Start ProxyGuard Session</h1>
         <p class="page-subtitle">Choose a class and teaching week before opening check-in.</p>
 
@@ -16,10 +16,10 @@
             <p class="error">{{ error }}</p>
             {% endif %}
 
-            <form method="post" action="/start">
+            <form method="post" action="/start" id="setupForm">
                 <div class="field">
                     <label for="subject">Class subject</label>
-                    <select id="subject" name="subject">
+                    <select id="subject" name="subject" required>
                         {% for subject in subjects %}
                         <option value="{{ subject }}">{{ subject }}</option>
                         {% endfor %}
@@ -28,14 +28,14 @@
 
                 <div class="field">
                     <label for="week">Week number</label>
-                    <select id="week" name="week">
+                    <select id="week" name="week" required>
                         {% for week in weeks %}
                         <option value="{{ week }}">Week {{ week }}</option>
                         {% endfor %}
                     </select>
                 </div>
 
-                <button type="submit" class="btn btn-primary">Start Session</button>
+                <button type="submit" class="btn btn-primary" id="startBtn">Start Session</button>
             </form>
 
             <p class="helper-text">
@@ -45,5 +45,15 @@
             </p>
         </div>
     </div>
+
+    {# Covers the picker immediately on submit -- see checkin.js. Startup
+       (loading face encodings + opening the camera) happens inside the
+       blocking POST /start, which can take ~20s; this gives the lecturer
+       immediate feedback instead of an apparently-frozen page. #}
+    <div id="checkin-skeleton-wrapper" hidden>
+        {% include "_checkin_skeleton.html" %}
+    </div>
+
+    <script src="{{ url_for('static', filename='js/checkin.js') }}"></script>
 </body>
 </html>

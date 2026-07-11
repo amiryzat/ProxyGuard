@@ -7,7 +7,13 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/checkin.css') }}">
 </head>
 <body>
-    <div class="page-container">
+    <!-- Shown by default; hidden by checkin.js once the MJPEG stream's first
+         frame has arrived AND /status confirms the station is active -- never
+         on a fixed timeout (requirement 5/6), so the lecturer never sees a
+         blank/black camera box while the feed warms up. -->
+    {% include "_checkin_skeleton.html" %}
+
+    <div class="page-container" id="real-checkin" hidden>
         <h1 class="page-title">ProxyGuard Check-in</h1>
 
         <!-- Class / week / session_id confirmed from the setup step. -->
@@ -34,7 +40,7 @@
              desktop app shows appear here too. -->
         <div class="card page-section">
             <div class="video-frame">
-                <img src="{{ url_for('video_feed') }}" alt="Live check-in camera">
+                <img id="videoFeed" src="{{ url_for('video_feed') }}" alt="Live check-in camera">
             </div>
         </div>
 
