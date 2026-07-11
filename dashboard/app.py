@@ -151,19 +151,46 @@ def write_review(session_id, date, time_str, name, result, reason, review_status
 
 def get_attendance_version():
     """
-    Cheap change-detection signal for Phase D5 smart refresh: the CSV's
-    mtime + size. Every terminal check-in outcome appends exactly one row to
-    this file (see CheckinSession in src/main.py) and saves its snapshot in
-    the same moment, so "has the CSV changed" is a reliable proxy for "is
-    there new attendance/snapshot data" without needing to separately stat
-    logs/snapshots/ or hash the file contents. Returns a stable placeholder
-    if the log doesn't exist yet, so /status and index() never see an
-    exception from a session with no check-ins yet.
+    Change-detection token for smart refresh (bug-fix pass, replacing an
+    mtime+size signal that missed cross-source changes): derived from actual
+    CSV content -- row count and the latest row's own fields -- plus
+    logs/reviews.csv's size and the newest snapshot filename, so a lecturer
+    review made in another tab/device (which previously never touched this
+    token at all -- see the now-corrected comment in submitReview()/
+    assistant_panel()) also counts as a change, not just a new attendance row.
+
+    Never raises: a `with open(...)` that lands mid-write by the check-in
+    process (a different, concurrent OS process) just returns the file's
+    content as of a moment ago, not a corrupted read -- Python's csv.reader
+    only ever gives back whole lines that were actually flushed to disk. If
+    the trailing row is short (a write only partially flushed), it's dropped
+    from the count/last-row fields below rather than raising, so a poll that
+    lands mid-write simply doesn't yet see that row -- the next poll retries
+    once the write has completed, per requirement 8. Returns a stable
+    placeholder if the log doesn't exist yet.
     """
     if not os.path.exists(LOG_PATH):
         return "no-log"
-    stat = os.stat(LOG_PATH)
-    return f"{stat.st_mtime_ns}-{stat.st_size}"
+
+    try:
+        with open(LOG_PATH, newline="") as f:
+            all_rows = list(csv.reader(f))
+        data_rows = [r for r in all_rows[1:] if len(r) == len(CSV_HEADERS)]
+        last_row = "|".join(data_rows[-1]) if data_rows else ""
+        row_count = len(data_rows)
+        file_size = os.path.getsize(LOG_PATH)
+    except OSError:
+        # Log existed a moment ago (checked above) but became unreadable
+        # mid-poll -- fall back to just its size rather than erroring /status
+        # out; the next poll retries.
+        row_count, last_row, file_size = "unreadable", "", os.path.getsize(LOG_PATH)
+
+    reviews_size = os.path.getsize(REVIEWS_PATH) if os.path.exists(REVIEWS_PATH) else 0
+    snapshot_files = list_snapshot_files()
+    newest_snapshot = max(snapshot_files) if snapshot_files else ""
+
+    token = f"{file_size}-{row_count}-{last_row}-{reviews_size}-{newest_snapshot}"
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
 
 
 def _slug(text):
@@ -810,11 +837,16 @@ def index():
 @app.route("/status")
 def status():
     """
-    Lightweight JSON endpoint (Phase D5) for dashboard.js to poll instead of
-    blindly reloading the whole page every REFRESH_SECONDS. Cheap: a single
-    os.stat() call, no CSV parsing, no pattern_flagger run.
+    Lightweight JSON endpoint for dashboard.js to poll instead of blindly
+    reloading the whole page every REFRESH_SECONDS. Explicit no-store headers
+    (bug-fix pass) so no browser/proxy ever serves a stale cached response for
+    a repeatedly-polled identical URL -- dashboard.js also requests with
+    `cache: "no-store"` and a cache-busting query param, belt and suspenders.
     """
-    return jsonify({"version": get_attendance_version()})
+    response = jsonify({"version": get_attendance_version()})
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
 
 
 @app.route("/export.csv")
@@ -922,12 +954,13 @@ def review():
 def assistant_panel():
     """
     Re-renders just the ProxyGuard Assistant panel for ?session=... (same
-    param the main page uses). A review action (Accept/Suspicious) only
-    writes logs/reviews.csv, not attendance.csv, so it never changes
-    get_attendance_version() and never triggers smart refresh on its own --
-    dashboard.js calls this after a successful /review instead, so the
-    assistant's suspicious/unreviewed-driven cards stay current without a
-    full page reload (Phase F1 requirement 8).
+    param the main page uses). A review action (Accept/Suspicious) writes
+    logs/reviews.csv, not attendance.csv -- get_attendance_version() now
+    includes reviews.csv's size (bug-fix pass), so it DOES eventually trigger
+    smart refresh in other tabs/devices, but the tab that made the review
+    updates itself immediately via this endpoint instead of waiting on that
+    round trip, so the assistant's suspicious/unreviewed-driven cards stay
+    current without a full page reload.
     """
     rows = read_attendance_rows()
     sessions = unique_sessions(rows)

@@ -40,27 +40,34 @@ function showTab(name) {
 
 document.getElementById('last-updated').textContent = new Date().toLocaleTimeString();
 
-// Phase D5 smart refresh: poll the lightweight /status endpoint instead of
-// blindly reloading the whole page every REFRESH_SECONDS. Only reload once
-// /status reports a DIFFERENT version than what this page was rendered with
-// (attendance.csv's mtime+size -- see get_attendance_version() in app.py) --
-// if nothing new was logged, do nothing, so an open Session dropdown or a
-// focused search box is never yanked out from under the lecturer.
+// Smart refresh: poll the lightweight /status endpoint instead of blindly
+// reloading the whole page every REFRESH_SECONDS. Only reload once /status
+// reports a DIFFERENT version than what this page was rendered with (a
+// content-derived token -- row count/latest row/reviews.csv/newest snapshot,
+// not filesystem mtime alone -- see get_attendance_version() in app.py) -- if
+// nothing changed, do nothing, so an open Session dropdown or a focused
+// search box is never yanked out from under the lecturer.
 //
 // A version change found while the lecturer is actively using a control
 // (search focused, session <select> focused, a quick-filter/tab button just
-// clicked -- it keeps focus after a click -- or the snapshot modal open)
-// sets pendingReload instead of reloading immediately; the reload happens on
-// the first later tick where none of those are true, so it's merely delayed,
-// never lost, and the modal in particular can never be closed by a refresh.
+// clicked -- it keeps focus after a click -- or any modal open) sets
+// pendingReload instead of reloading immediately. Bug-fix pass: rather than
+// only re-checking pendingReload on the next scheduled poll tick (up to
+// REFRESH_SECONDS late), a delegated `focusout` listener below re-checks the
+// instant any control loses focus or a modal closes, so the refresh lands as
+// soon as the lecturer is done, not up to REFRESH_SECONDS after. pendingReload
+// itself can never get "stuck" permanently: it is pure derived state
+// (isUserBusy() reads live DOM focus/modal-open state, not a manual flag that
+// could be left mis-set), so it always clears the moment the lecturer is
+// actually done interacting.
 var refreshSeconds = parseInt(document.body.dataset.refreshSeconds, 10);
 var knownVersion = document.body.dataset.attendanceVersion;
 var pendingReload = false;
 
 function isUserBusy() {
-    // Phase E4: two independent modal types (snapshot preview, review note)
-    // can each be open -- either one blocks a refresh, checked generically
-    // rather than by name so a third modal type would need no change here.
+    // Two independent modal types (snapshot preview, review note, assistant)
+    // can each be open -- any one blocks a refresh, checked generically
+    // rather than by name so a future modal type would need no change here.
     if (document.querySelector('.modal-overlay.open')) {
         return true;
     }
@@ -74,21 +81,47 @@ function isUserBusy() {
     );
 }
 
-setInterval(function () {
-    fetch('/status')
-        .then(function (response) { return response.json(); })
+// Reload immediately if a change was detected earlier while busy and the
+// lecturer has since finished interacting -- called both from the poll tick
+// below and from the focusout/modal-close hooks, so a pending refresh is
+// never stuck waiting out the rest of the poll interval (requirement 10).
+function maybeApplyPendingReload() {
+    if (pendingReload && !isUserBusy()) {
+        window.location.reload();
+    }
+}
+
+// Re-check the instant focus leaves any control or a modal finishes closing
+// -- covers search/session/filters/review-cell losing focus, and (via the
+// timeout in closeAssistantWindow()) the assistant's animated close.
+document.addEventListener('focusout', maybeApplyPendingReload);
+
+function pollStatus() {
+    // cache: "no-store" plus a cache-busting query param -- belt and
+    // suspenders alongside the server's own Cache-Control/Pragma headers (see
+    // /status in app.py) -- so no browser/proxy ever serves a stale cached
+    // response for this repeatedly-polled identical URL.
+    fetch('/status?_=' + Date.now(), { cache: 'no-store' })
+        .then(function (response) {
+            if (!response.ok) throw new Error('status endpoint returned ' + response.status);
+            return response.json();
+        })
         .then(function (data) {
             if (data.version !== knownVersion) {
                 pendingReload = true;
             }
-            if (pendingReload && !isUserBusy()) {
-                window.location.reload();
-                return;
-            }
+            maybeApplyPendingReload();
             document.getElementById('last-updated').textContent = new Date().toLocaleTimeString();
         })
-        .catch(function () { /* transient network hiccup -- just try again next tick */ });
-}, refreshSeconds * 1000);
+        .catch(function (err) {
+            // Transient network hiccup or a bad response -- log and try
+            // again next tick; a single failed poll must never stop the
+            // interval (requirement 6).
+            console.warn('smart refresh poll failed, will retry:', err);
+        });
+}
+
+setInterval(pollStatus, refreshSeconds * 1000);
 
 // Snapshot preview modal (Phase D3) + review note modal (Phase E4). Event
 // delegation on document (rather than per-element onclick) so both keep
@@ -119,6 +152,7 @@ function closeModal(overlay) {
         return;
     }
     overlay.classList.remove('open');
+    maybeApplyPendingReload(); // a change may have been detected while this modal was open
 }
 
 function openAssistantWindow() {
@@ -137,6 +171,7 @@ function closeAssistantWindow() {
     assistantWindow.classList.remove('show');
     setTimeout(function () {
         assistantModal.classList.remove('open');
+        maybeApplyPendingReload(); // a change may have been detected while the assistant was open
     }, ASSISTANT_ANIM_MS);
 }
 
@@ -221,6 +256,14 @@ function submitReview(cell, status, note) {
         updateReviewSummaryCounts();
         refreshAssistantPanel(); // suspicious/unreviewed counts feed assistant rules -- keep it in sync
         applyFilters(); // in case an active review filter no longer matches this row's new status
+        // A review write now changes get_attendance_version() too (so other
+        // tabs/devices pick it up via smart refresh) -- sync knownVersion so
+        // THIS tab, which just applied the same update in place above,
+        // doesn't also full-reload itself moments later on the next poll.
+        fetch('/status?_=' + Date.now(), { cache: 'no-store' })
+            .then(function (r) { return r.json(); })
+            .then(function (d) { knownVersion = d.version; })
+            .catch(function () { /* next poll will just detect a "change" and reload -- harmless */ });
     });
 }
 
