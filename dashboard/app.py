@@ -472,6 +472,209 @@ def build_review_summary(attempt_rows_with_review):
     return counts
 
 
+# ---- Phase F1/F3: rule-based lecturer recommendation assistant -------------
+# Deterministic, no external AI API -- every card comes from a fixed rule
+# evaluated against attempt_rows_all (the session's failed/Attempts rows,
+# already carrying flagged/snapshot/review data by the time the caller builds
+# it), so "ProxyGuard Assistant" never needs its own data pass or any new CSV.
+# Wording is deliberately hedged ("possible proxy risk", "manual review
+# recommended", "verify using the snapshot", "requires lecturer decision")
+# rather than accusatory ("cheating", "fraud", "confirmed") -- this is
+# decision support, not an automatic verdict.
+ASSISTANT_PRIORITY_RANK = {"High": 0, "Medium": 1, "Low": 2}
+ASSISTANT_MAX_CARDS = 5
+
+
+def _matching_names(rows):
+    """Registered (non-"Unknown") names among matching rows, in row order (a
+    duplicate/liveness/flagged card's affected attempts usually do have a
+    resolved identity, even though the outcome was a failure)."""
+    return [d["cells"].get("name") for d in rows if d["cells"].get("name") and d["cells"].get("name") != "Unknown"]
+
+
+def _matching_times(rows):
+    """`time` values among matching rows, in row order -- used for the Unknown
+    card, whose rows are always logged under "Unknown" so names are useless
+    but attempt times still help a lecturer spot-check the log."""
+    return [d["cells"].get("time") for d in rows if d["cells"].get("time")]
+
+
+def _compact_list(items, limit=3):
+    """
+    Compact "A, B, C, +N more" summary of `items` (dedup, order-preserving),
+    per Phase F3 requirement 2 -- affected-attempt detail should be a glance,
+    not a second full table. Empty string if nothing to show.
+    """
+    seen = []
+    for item in items:
+        if item not in seen:
+            seen.append(item)
+    if not seen:
+        return ""
+    shown = seen[:limit]
+    text = ", ".join(shown)
+    if len(seen) > limit:
+        text += f", +{len(seen) - limit} more"
+    return text
+
+
+def _card_actions(filter_type, filter_value, extra=None):
+    """
+    Buttons for one recommendation card: a "View affected attempts" button
+    that dashboard.js maps to one of the existing quick/review filter chips
+    (never a new filtering mechanism). A dedicated "Review snapshot" button
+    was removed as redundant -- View affected attempts already lands the
+    lecturer on the matching rows, where each one's own snapshot thumbnail
+    opens the same modal directly.
+    """
+    actions = [{"type": "view_filter", "label": "View affected attempts",
+                "filter_type": filter_type, "filter_value": filter_value}]
+    if extra:
+        actions.extend(extra)
+    return actions
+
+
+def build_assistant_recommendations(session_analytics, review_summary, attempt_rows_all):
+    """
+    Up to ASSISTANT_MAX_CARDS recommendation cards for the selected session.
+    Each card is resolution-aware (only appears while the underlying rows
+    still match -- e.g. the pending-review card disappears the moment every
+    row is reviewed, requirement 7) and carries enough detail to act on
+    directly instead of just reading about it (requirement 1): a count, a
+    "Triggered by" explanation, a compact name/time detail line where useful,
+    and one or more action buttons (requirement 3/4/5).
+
+    Ranked per requirement 8 (flagged/suspicious, then duplicate, then
+    unreviewed, then unknown, then liveness, then success-rate advice, then
+    the normal-session filler) -- achieved simply by adding cards in that
+    order and doing a final *stable* sort by priority, so same-priority cards
+    keep this relative order rather than needing a second rank table.
+    """
+    total = session_analytics["total"]
+    cards = []
+
+    if total == 0:
+        return [{
+            "priority": "Low", "title": "No attendance data yet", "count": 0,
+            "triggered_by": "No check-in attempts have been recorded for this session yet.",
+            "detail": "", "action": "Recommendations will appear once check-ins start coming in.",
+            "actions": [],
+        }]
+
+    duplicate_rows = [d for d in attempt_rows_all if d["cells"].get("reason") == pattern_flagger.DUPLICATE_REASON]
+    flagged_rows = [d for d in attempt_rows_all if d["flagged"]]
+    suspicious_rows = [d for d in attempt_rows_all if d["review"]["review_status"] == "suspicious"]
+    unreviewed_rows = [d for d in attempt_rows_all if d["review"]["review_status"] == "unreviewed"]
+    unknown_rows = [
+        d for d in attempt_rows_all
+        if d["cells"].get("name") == "Unknown" or d["cells"].get("reason") == pattern_flagger.NOT_RECOGNIZED_REASON
+    ]
+    liveness_rows = [d for d in attempt_rows_all if "liveness" in (d["cells"].get("reason") or "").lower()]
+    success_rate = session_analytics["success_rate"]
+
+    if flagged_rows:
+        n = len(flagged_rows)
+        cards.append({
+            "priority": "High", "title": "Flagged attempts detected", "count": n,
+            "triggered_by": f"Triggered by: {n} attempt{'s' if n != 1 else ''} matching a known suspicious "
+                            "pattern (repeated failures, duplicate check-ins, or clustered unrecognized attempts).",
+            "detail": _compact_list(_matching_names(flagged_rows)),
+            "action": "Possible proxy risk -- manual review recommended before exporting final attendance.",
+            "actions": _card_actions("quick", "flagged"),
+        })
+
+    if suspicious_rows:
+        n = len(suspicious_rows)
+        cards.append({
+            "priority": "High", "title": "Lecturer-marked suspicious attempts", "count": n,
+            "triggered_by": f"Triggered by: {n} attempt{'s' if n != 1 else ''} marked Suspicious during manual review.",
+            "detail": _compact_list(_matching_names(suspicious_rows)),
+            "action": "Verify using the snapshot and decide whether to exclude these from the final record.",
+            "actions": _card_actions("review", "suspicious"),
+        })
+
+    if duplicate_rows:
+        n = len(duplicate_rows)
+        cards.append({
+            "priority": "High" if n >= 2 else "Medium", "title": "Duplicate check-in attempts", "count": n,
+            "triggered_by": f"Triggered by: {n} duplicate check-in record{'s' if n != 1 else ''} in the selected session.",
+            "detail": _compact_list(_matching_names(duplicate_rows)),
+            "action": "Manual review recommended -- verify using the snapshot before accepting either attempt.",
+            "actions": _card_actions("quick", "duplicate"),
+        })
+
+    if unreviewed_rows:
+        n = len(unreviewed_rows)
+        cards.append({
+            "priority": "Medium", "title": "Attempts pending review", "count": n,
+            "triggered_by": f"Triggered by: {n} attempt{'s' if n != 1 else ''} still marked Unreviewed.",
+            "detail": "",
+            "action": "Requires lecturer decision -- complete Accept / Suspicious review before exporting.",
+            "actions": _card_actions("review", "unreviewed",
+                                      extra=[{"type": "open_next_unreviewed", "label": "Open next unreviewed attempt"}]),
+        })
+
+    if unknown_rows:
+        n = len(unknown_rows)
+        cards.append({
+            "priority": "Medium", "title": "Unrecognized face attempts", "count": n,
+            "triggered_by": f"Triggered by: {n} attempt{'s' if n != 1 else ''} that could not be matched to a registered student.",
+            "detail": _compact_list(_matching_times(unknown_rows)),
+            "action": "Verify using the snapshot whether the student is enrolled, or whether reference photos need updating.",
+            "actions": _card_actions("quick", "unknown"),
+        })
+
+    if liveness_rows:
+        n = len(liveness_rows)
+        cards.append({
+            "priority": "Medium", "title": "Liveness challenge failures", "count": n,
+            "triggered_by": f"Triggered by: {n} liveness timeout record{'s' if n != 1 else ''}.",
+            "detail": _compact_list(_matching_names(liveness_rows)),
+            "action": "Ask students to retry under better lighting/camera positioning; verify using the snapshot if failures repeat.",
+            "actions": _card_actions("quick", "liveness"),
+        })
+
+    if total >= 3 and success_rate < 80:
+        cards.append({
+            "priority": "Medium", "title": "Lower than expected success rate", "count": session_analytics["failed"],
+            "triggered_by": f"Triggered by: only {success_rate}% of attempts succeeded this session.",
+            "detail": "", "action": "Check camera placement, lighting, and student distance from the webcam.",
+            "actions": [],
+        })
+
+    if not cards:
+        cards.append({
+            "priority": "Low", "title": "Session appears normal", "count": 0,
+            "triggered_by": "No duplicate attempts, unrecognized faces, liveness failures, or flagged/suspicious rows were detected.",
+            "detail": "", "action": "Possible proxy risk is low -- no action required, though a lecturer may still spot-check a snapshot.",
+            "actions": [],
+        })
+
+    cards.sort(key=lambda c: ASSISTANT_PRIORITY_RANK[c["priority"]])
+    return cards[:ASSISTANT_MAX_CARDS]
+
+
+def build_assistant_summary(cards, review_summary, session_analytics):
+    """
+    Short session summary for the top of the assistant window (Phase F4
+    requirement 2): success rate first, then attention level, main concern,
+    and how many attempts still need a manual review decision. Attention/main
+    concern reuse whichever card the ranking already placed first -- so they
+    can never disagree with the list directly below -- rather than
+    recomputing a second notion of severity.
+    """
+    real_cards = [c for c in cards if c["count"] > 0]
+    top = real_cards[0] if real_cards else cards[0]
+    return {
+        "attention": top["priority"],
+        "main_concern": top["title"],
+        "needs_review": review_summary["unreviewed"],
+        "success_rate": session_analytics["success_rate"],
+        "successful": session_analytics["successful"],
+        "total": session_analytics["total"],
+    }
+
+
 SESSION_ID_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{4}_(?P<code>[A-Za-z0-9]+)_Week(?P<week>\d+)$")
 
 
@@ -568,6 +771,13 @@ def index():
     session_analytics = build_session_analytics(display_rows)
     reason_breakdown = build_reason_breakdown(display_rows)
 
+    # Phase F1/F3: rule-based only, no external AI API -- see
+    # build_assistant_recommendations() above. Reuses session_analytics/
+    # review_summary/attempt_rows_all already computed for this request, so
+    # the panel follows whatever session is selected with no extra CSV read.
+    assistant_cards = build_assistant_recommendations(session_analytics, review_summary, attempt_rows_all)
+    assistant_summary = build_assistant_summary(assistant_cards, review_summary, session_analytics)
+
     return render_template(
         "index.html",
         headers=CSV_HEADERS,
@@ -581,6 +791,8 @@ def index():
         session_analytics=session_analytics,
         reason_breakdown=reason_breakdown,
         review_summary=review_summary,
+        assistant_cards=assistant_cards,
+        assistant_summary=assistant_summary,
         refresh_seconds=REFRESH_SECONDS,
         # Phase D5: the version this page was rendered with, so dashboard.js
         # has a baseline to compare each /status poll against without an
@@ -704,6 +916,32 @@ def review():
 
     new_review_id = write_review(session_id, date, time_str, name, result, reason, review_status, review_note)
     return jsonify({"review_id": new_review_id, "review_status": review_status, "review_note": review_note})
+
+
+@app.route("/assistant_panel")
+def assistant_panel():
+    """
+    Re-renders just the ProxyGuard Assistant panel for ?session=... (same
+    param the main page uses). A review action (Accept/Suspicious) only
+    writes logs/reviews.csv, not attendance.csv, so it never changes
+    get_attendance_version() and never triggers smart refresh on its own --
+    dashboard.js calls this after a successful /review instead, so the
+    assistant's suspicious/unreviewed-driven cards stay current without a
+    full page reload (Phase F1 requirement 8).
+    """
+    rows = read_attendance_rows()
+    sessions = unique_sessions(rows)
+    selected_session = resolve_selected_session(sessions)
+    display_rows = build_session_display_rows(rows, selected_session)
+    attempt_rows_all = [d for d in display_rows if d["cells"].get("result") == "failed"]
+    reviews = read_reviews()
+    for d in attempt_rows_all:
+        d["review"] = get_review_for_row(d["cells"], reviews)
+    review_summary = build_review_summary(attempt_rows_all)
+    session_analytics = build_session_analytics(display_rows)
+    assistant_cards = build_assistant_recommendations(session_analytics, review_summary, attempt_rows_all)
+    assistant_summary = build_assistant_summary(assistant_cards, review_summary, session_analytics)
+    return render_template("_assistant_panel.html", assistant_cards=assistant_cards, assistant_summary=assistant_summary)
 
 
 @app.route("/snapshot/<path:filename>")

@@ -20,6 +20,11 @@ function showTab(name) {
     document.getElementById('tab-panel-attempts-filters').classList.toggle('active', name === 'attempts');
     document.getElementById('active-tab-field').value = name;
 
+    // Phase F3 refinement: the assistant button/window are now a sibling of
+    // both tab panels (available from Present and Attempts alike), so a
+    // plain tab switch no longer needs to force-close them -- an open
+    // assistant window simply stays open across Present <-> Attempts.
+
     var params = new URLSearchParams(window.location.search);
     params.set('tab', name);
     history.replaceState(null, '', '?' + params.toString());
@@ -98,9 +103,44 @@ var modal = document.getElementById('snapshot-modal');
 var noteModal = document.getElementById('note-modal');
 var activeNoteCell = null; // .review-cell currently open in the note modal
 
+// Phase F2: assistant window shares the .modal-overlay class (so backdrop-
+// click and Escape already close it via the same generic paths as the other
+// two modals) but needs an extra animated step on close -- closeModal()
+// below special-cases it rather than an instant classList.remove('open').
+var assistantFab = document.getElementById('assistant-fab');
+var assistantModal = document.getElementById('assistant-modal');
+var assistantWindow = assistantModal.querySelector('.assistant-window');
+var ASSISTANT_ANIM_MS = 180; // matches the .assistant-window transition duration in dashboard.css
+
 function closeModal(overlay) {
-    if (overlay) overlay.classList.remove('open');
+    if (!overlay) return;
+    if (overlay === assistantModal) {
+        closeAssistantWindow();
+        return;
+    }
+    overlay.classList.remove('open');
 }
+
+function openAssistantWindow() {
+    assistantModal.classList.add('open');
+    // One frame so the browser paints the initial (scaled-down/transparent)
+    // state before .show flips it to the transition's end state -- adding
+    // both classes in the same frame would just snap straight to "open"
+    // with no visible animation.
+    requestAnimationFrame(function () {
+        assistantWindow.classList.add('show');
+    });
+    refreshAssistantPanel(); // pick up anything that changed since page load
+}
+
+function closeAssistantWindow() {
+    assistantWindow.classList.remove('show');
+    setTimeout(function () {
+        assistantModal.classList.remove('open');
+    }, ASSISTANT_ANIM_MS);
+}
+
+assistantFab.addEventListener('click', openAssistantWindow);
 
 function openSnapshotModal(link) {
     document.getElementById('modal-img').src = link.dataset.src;
@@ -179,6 +219,7 @@ function submitReview(cell, status, note) {
         row.dataset.reviewStatus = status;
         updateNoteButton(cell, note);
         updateReviewSummaryCounts();
+        refreshAssistantPanel(); // suspicious/unreviewed counts feed assistant rules -- keep it in sync
         applyFilters(); // in case an active review filter no longer matches this row's new status
     });
 }
@@ -195,7 +236,124 @@ function updateReviewSummaryCounts() {
     });
 }
 
+// Phase F1/F2: a review action only writes logs/reviews.csv, never
+// attendance.csv, so it never changes get_attendance_version() and never
+// triggers smart refresh on its own -- re-fetch just the assistant cards
+// (server-rendered, same rules as the full page) for the currently selected
+// session instead of duplicating the rule logic here.
+function refreshAssistantPanel() {
+    var sessionSelect = document.getElementById('session');
+    var session = sessionSelect ? sessionSelect.value : '';
+    var url = '/assistant_panel' + (session ? '?session=' + encodeURIComponent(session) : '');
+    fetch(url)
+        .then(function (response) { return response.text(); })
+        .then(function (html) {
+            var target = document.getElementById('assistant-cards-target');
+            target.innerHTML = html;
+            updateAssistantBadge(target);
+        })
+        .catch(function () { /* transient network hiccup -- leave the panel as-is */ });
+}
+
+// Small red count on the floating button itself -- counts .priority-high
+// CARDS specifically (scoped to .assistant-card, not the whole panel) rather
+// than a second server-side count, so it can never drift from what the
+// window actually shows. Phase F4 added a compact summary block with its own
+// "Attention" priority badge above the cards -- an unscoped query would
+// double-count that badge whenever attention is High.
+function updateAssistantBadge(cardsTarget) {
+    var badge = document.getElementById('assistant-fab-badge');
+    var highCount = cardsTarget.querySelectorAll('.assistant-card .priority-high').length;
+    badge.textContent = highCount;
+    badge.style.display = highCount > 0 ? 'inline-flex' : 'none';
+}
+updateAssistantBadge(document.getElementById('assistant-cards-target')); // reflect the server-rendered initial cards
+
+// Phase F3: assistant card action buttons ("View affected attempts", "Open
+// next unreviewed attempt"). Both reuse the existing filter chips rather
+// than a second filtering system -- see _card_actions()/
+// build_assistant_recommendations() in app.py
+// for how each button's data-* attributes are built.
+function activateResultFilter(value) {
+    resultFilterButtons.forEach(function (b) { b.classList.toggle('active', b.dataset.filter === value); });
+    localStorage.setItem(QUICK_FILTER_STORAGE_KEY, value);
+}
+
+function activateReviewFilter(value) {
+    reviewFilterButtons.forEach(function (b) { b.classList.toggle('active', b.dataset.reviewFilter === value); });
+    localStorage.setItem(REVIEW_FILTER_STORAGE_KEY, value);
+}
+
+// Closes/minimizes the assistant window and makes sure Attempts is the
+// active tab. Phase F3 refinement: the assistant is now reachable from
+// Present too, and showTab() no longer auto-closes it as a side effect
+// (see showTab() above), so this always closes it explicitly -- whether or
+// not a tab switch is also needed -- rather than relying on that removed
+// behavior.
+function switchToAttemptsAndCloseAssistant() {
+    if (!document.getElementById('tab-panel-attempts').classList.contains('active')) {
+        showTab('attempts');
+    }
+    closeAssistantWindow();
+}
+
+function scrollAttemptsTableIntoView() {
+    var table = document.querySelector('#tab-panel-attempts .table-card');
+    if (table) table.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function findFirstVisibleUnreviewedRow() {
+    var rows = document.querySelectorAll('#tab-panel-attempts .attendance-row');
+    for (var i = 0; i < rows.length; i++) {
+        if (rows[i].style.display !== 'none' && rows[i].dataset.reviewStatus === 'unreviewed') {
+            return rows[i];
+        }
+    }
+    return null;
+}
+
+function flashRow(row) {
+    row.classList.add('assistant-highlight');
+    setTimeout(function () { row.classList.remove('assistant-highlight'); }, 1500);
+}
+
+function handleAssistantAction(button) {
+    var action = button.dataset.action;
+
+    if (action === 'view-filter') {
+        switchToAttemptsAndCloseAssistant();
+        if (button.dataset.filterType === 'review') {
+            activateReviewFilter(button.dataset.filterValue);
+            activateResultFilter('all');
+        } else {
+            activateResultFilter(button.dataset.filterValue);
+            activateReviewFilter('all');
+        }
+        applyFilters();
+        scrollAttemptsTableIntoView();
+        return;
+    }
+
+    if (action === 'open-next-unreviewed') {
+        switchToAttemptsAndCloseAssistant();
+        activateReviewFilter('unreviewed');
+        activateResultFilter('all');
+        applyFilters();
+        var row = findFirstVisibleUnreviewedRow();
+        if (row) {
+            row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            flashRow(row);
+        }
+    }
+}
+
 document.addEventListener('click', function (event) {
+    var assistantActionBtn = event.target.closest('.assistant-action-btn');
+    if (assistantActionBtn) {
+        handleAssistantAction(assistantActionBtn);
+        return;
+    }
+
     var link = event.target.closest('.snapshot-link');
     if (link) {
         event.preventDefault(); // open the modal, not the plain <a href> navigation

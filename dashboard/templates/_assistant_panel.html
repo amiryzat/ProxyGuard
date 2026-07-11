@@ -1,0 +1,73 @@
+{# Phase F1-F4: ProxyGuard Assistant body (see build_assistant_recommendations()/
+   build_assistant_summary() in app.py). The window chrome (title, static
+   disclaimer, close button) is static markup in index.html -- this partial is
+   everything that changes with session/review data, so /assistant_panel can
+   return exactly what dashboard.js drops into #assistant-cards-target after a
+   review action, with no duplicated HTML between the full page and the
+   refresh.
+
+   Phase F4 hierarchy (requirement 2): success rate, then attention/main
+   concern/needs-review, then the prioritized cards -- in that reading order,
+   top to bottom. #}
+<div class="assistant-progress">
+    <div class="assistant-progress-row">
+        <span class="assistant-progress-label">Session success rate</span>
+        <span class="assistant-progress-value">{{ assistant_summary.success_rate }}%</span>
+    </div>
+    <div class="assistant-progress-track">
+        <div class="assistant-progress-fill" style="width: {{ assistant_summary.success_rate }}%;"></div>
+    </div>
+    <p class="assistant-progress-caption">{{ assistant_summary.successful }} successful out of {{ assistant_summary.total }} attempt{{ 's' if assistant_summary.total != 1 else '' }}</p>
+</div>
+
+<div class="assistant-summary">
+    <div class="assistant-summary-item">
+        <span class="assistant-summary-label">Attention</span>
+        <span class="priority-badge priority-{{ assistant_summary.attention|lower }}">{{ assistant_summary.attention }}</span>
+    </div>
+    <div class="assistant-summary-item">
+        <span class="assistant-summary-label">Main concern</span>
+        <span class="assistant-summary-value">{{ assistant_summary.main_concern }}</span>
+    </div>
+    <div class="assistant-summary-item">
+        <span class="assistant-summary-label">Needs review</span>
+        <span class="assistant-summary-value">{{ assistant_summary.needs_review }}</span>
+    </div>
+</div>
+
+<div class="assistant-cards">
+{% for card in assistant_cards %}
+<div class="assistant-card">
+    <div class="assistant-card-top">
+        <span class="priority-badge priority-{{ card.priority|lower }}">{{ card.priority }}</span>
+        <span class="assistant-card-title">{{ card.title }}</span>
+        {% if card.count %}
+        <span class="assistant-card-count">{{ card.count }}</span>
+        {% endif %}
+    </div>
+    {% if card.triggered_by %}
+    <p class="assistant-card-triggered">{{ card.triggered_by }}</p>
+    {% endif %}
+    {% if card.detail %}
+    <p class="assistant-card-detail" title="{{ card.detail }}">{{ card.detail }}</p>
+    {% endif %}
+    <p class="assistant-card-action">{{ card.action }}</p>
+    {% if card.actions %}
+    <div class="assistant-card-buttons">
+        {% for action in card.actions %}
+            {% if action.type == "view_filter" %}
+            <button type="button" class="assistant-action-btn" data-action="view-filter"
+                    data-filter-type="{{ action.filter_type }}" data-filter-value="{{ action.filter_value }}">
+                {{ action.label }}
+            </button>
+            {% elif action.type == "open_next_unreviewed" %}
+            <button type="button" class="assistant-action-btn" data-action="open-next-unreviewed">
+                {{ action.label }}
+            </button>
+            {% endif %}
+        {% endfor %}
+    </div>
+    {% endif %}
+</div>
+{% endfor %}
+</div>
