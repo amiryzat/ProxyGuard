@@ -223,6 +223,36 @@
             </div>
         </div>
 
+        {# Phase F3 refinement: floating assistant button + popover window,
+           moved out of #tab-panel-attempts to be a sibling of both tab
+           panels -- so it (and its recommendations, still driven purely by
+           the selected session) is reachable from Present as well as
+           Attempts, not just the latter. position: fixed means its DOM
+           location never affects layout; only an ancestor's display:none
+           would hide it, and neither tab-panel is an ancestor here. The
+           overlay reuses the shared .modal-overlay class so the existing
+           backdrop-click and Escape-closes-all-open-modals handlers in
+           dashboard.js already cover it -- closeModal() special-cases
+           #assistant-modal to animate out first. #}
+        <button type="button" id="assistant-fab" class="assistant-fab" aria-haspopup="dialog" aria-controls="assistant-modal">
+            <span class="assistant-fab-icon" aria-hidden="true">&#10022;</span>
+            Assistant
+            <span class="assistant-fab-badge" id="assistant-fab-badge" style="display: none;"></span>
+        </button>
+
+        <div id="assistant-modal" class="modal-overlay assistant-overlay">
+            <div class="modal-content assistant-window">
+                <div class="modal-header assistant-window-header">
+                    <h2 class="assistant-window-title">ProxyGuard Assistant</h2>
+                    <button type="button" class="modal-close" aria-label="Close assistant">&times; Close</button>
+                </div>
+                <p class="assistant-subtitle">Rule-based guidance. Final decisions remain with the lecturer.</p>
+                <div class="assistant-panel-body" id="assistant-cards-target">
+                    {% include "_assistant_panel.html" %}
+                </div>
+            </div>
+        </div>
+
         <div class="tab-panel {% if active_tab == 'present' %}active{% endif %}" id="tab-panel-present">
             {{ render_table(present_rows) }}
         </div>

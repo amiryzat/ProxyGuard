@@ -443,7 +443,8 @@ class CheckinSession:
                 if num_faces > 1:
                     # Multiple faces: label each box with its OWN recognition
                     # result. last_known_name is a single-identity anti-flicker
-                    # guard (Bug 1) and must not be painted onto every box, or a
+                    # guard (Bug 1)
+                    # and must not be painted onto every box, or a
                     # second person would wrongly show the registered student's
                     # name. See docs/bugs.md (Bug 5, Issue A).
                     display_name = name

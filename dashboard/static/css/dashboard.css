@@ -213,6 +213,307 @@ body {
     color: var(--color-ink);
 }
 
+/* ---- ProxyGuard Assistant floating button + window (Phase F1/F2) -------
+   Rule-based recommendation cards, opened from a floating button instead of
+   an always-visible panel. Monochrome by default -- the priority badge is
+   the only place color carries meaning, and only High priority gets the
+   ember/red treatment (DESIGN.md's single-destructive-red rule), matching
+   flagged-row highlighting elsewhere. */
+
+.assistant-fab {
+    position: fixed;
+    top: 40px;
+    right: var(--spacing-24);
+    z-index: 90;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 18px;
+    background: var(--color-ink);
+    border: 1px solid var(--color-ink);
+    border-radius: 999px;
+    box-shadow: var(--shadow-subtle);
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--color-surface-alt);
+    cursor: pointer;
+}
+.assistant-fab:hover {
+    background: var(--color-ink-soft);
+}
+.assistant-fab-icon {
+    font-size: 14px;
+    line-height: 1;
+}
+.assistant-fab-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    border-radius: 999px;
+    background: var(--color-ember);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 16px;
+}
+
+/* Popover-style overlay: a transparent full-viewport click-catcher (for
+   click-outside-to-close, reusing the same backdrop-click handler the
+   snapshot/note modals already use) rather than a dark dimmed modal
+   backdrop -- this is a small floating window, not a page-blocking dialog. */
+.assistant-overlay {
+    background: transparent;
+    align-items: flex-start;
+    justify-content: flex-end;
+    padding: 88px var(--spacing-24) var(--spacing-24) 0;
+}
+
+.assistant-window {
+    width: 100%;
+    max-width: 480px;
+    max-height: min(70vh, 640px);
+    overflow-y: auto;
+    transform-origin: top right;
+    transform: scale(0.94) translateY(-6px);
+    opacity: 0;
+    transition: transform 0.18s ease, opacity 0.18s ease;
+}
+.assistant-window.show {
+    transform: scale(1) translateY(0);
+    opacity: 1;
+}
+
+.assistant-window-header {
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: var(--spacing-12);
+    margin-bottom: var(--spacing-4);
+    border-bottom: 1px solid var(--color-hairline);
+}
+
+.assistant-window-title {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--color-ink);
+}
+
+.assistant-subtitle {
+    margin: 0 0 var(--spacing-16);
+    font-size: 12px;
+    color: var(--color-mid-gray);
+}
+
+/* Phase F4: outer flex column holding the three major sections in reading
+   order (success rate -> compact summary -> recommendation cards), each
+   separated by generous section-level spacing rather than the tighter
+   card-internal gap below. */
+.assistant-panel-body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-20);
+}
+
+/* Phase F4: success-rate section -- plain text + a monochrome progress bar,
+   deliberately un-boxed (no card border/background) so it doesn't compete
+   visually with the bordered recommendation cards below it. */
+.assistant-progress-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+}
+.assistant-progress-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-mid-gray);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+.assistant-progress-value {
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--color-ink);
+    letter-spacing: -0.02em;
+}
+.assistant-progress-track {
+    margin-top: var(--spacing-8);
+    height: 8px;
+    background: var(--color-canvas);
+    border-radius: var(--radius-small);
+    overflow: hidden;
+}
+.assistant-progress-fill {
+    height: 100%;
+    background: var(--color-ink-soft);
+    border-radius: var(--radius-small);
+}
+.assistant-progress-caption {
+    margin: var(--spacing-8) 0 0;
+    font-size: 12px;
+    color: var(--color-mid-gray);
+}
+
+/* Phase F4: compact attention/main-concern/needs-review row, replacing the
+   earlier boxed summary card -- a hairline rule underneath is enough
+   separation from the cards below without a second nested-card background. */
+.assistant-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--spacing-16);
+    padding-bottom: var(--spacing-20);
+    border-bottom: 1px solid var(--color-hairline);
+}
+.assistant-summary-item {
+    flex: 1 1 auto;
+    min-width: 6rem;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.assistant-summary-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--color-mid-gray);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+.assistant-summary-value {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--color-ink);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.assistant-cards {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-16);
+}
+
+.assistant-card {
+    padding: var(--spacing-16);
+    background: var(--color-canvas);
+    border: 1px solid var(--color-hairline);
+    border-radius: var(--radius-nested);
+}
+
+/* Top row (requirement 6): priority badge, title, affected count pinned right. */
+.assistant-card-top {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-8);
+    margin-bottom: var(--spacing-8);
+}
+
+.assistant-card-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--color-ink);
+}
+
+.assistant-card-count {
+    margin-left: auto;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-mid-gray);
+}
+
+/* Middle (requirement 6): one short "why" line (muted, truncated to a single
+   line -- progressive disclosure per requirement 4, no name dumps) and one
+   short "what to do" line, given slightly more weight so it reads as the
+   takeaway rather than a third muted sentence. */
+.assistant-card-triggered {
+    margin: 0;
+    font-size: 12px;
+    color: var(--color-mid-gray);
+}
+.assistant-card-detail {
+    margin: var(--spacing-4) 0 0;
+    font-size: 12px;
+    color: var(--color-mid-gray);
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+.assistant-card-action {
+    margin: var(--spacing-8) 0 0;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--color-ink);
+}
+
+/* Bottom (requirement 6): action buttons, cleanly separated from the text
+   above. No black fills anywhere here (requirement 7) -- primary is a white
+   button with a stronger ink border, secondary is a soft gray ghost button,
+   both still at the system's 18px --radius-buttons with a fixed height. */
+.assistant-card-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--spacing-8);
+    margin-top: var(--spacing-12);
+}
+/* One shared, single-tier style for every assistant action button (View
+   affected attempts / Open next unreviewed attempt, and any future action)
+   -- no primary/secondary split needed now that "Review snapshot" is gone,
+   since a card never shows more than one action that needs its own weight.
+   No thick/high-contrast borders, no black fills. */
+.assistant-action-btn {
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    height: 32px;
+    padding: 0 14px;
+    border-radius: var(--radius-buttons);
+    border: 1px solid var(--color-hairline);
+    background: var(--color-paper);
+    color: var(--color-ink);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: filter 0.18s ease, box-shadow 0.18s ease;
+}
+.assistant-action-btn:hover {
+    filter: brightness(0.96);
+    box-shadow: var(--shadow-subtle);
+}
+.assistant-action-btn:active {
+    filter: brightness(0.9);
+}
+.assistant-action-btn:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(10, 10, 10, 0.12);
+}
+
+/* Badge component: same restrained treatment as .review-badge -- neutral
+   outline for Low, muted fill for Medium, ember/red only for High. */
+.priority-badge {
+    flex-shrink: 0;
+    padding: 2px 10px;
+    border-radius: var(--radius-badges);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+.priority-low {
+    background: transparent;
+    border: 1px solid var(--color-hairline);
+    color: var(--color-mid-gray);
+}
+.priority-medium {
+    background: var(--color-hairline);
+    color: var(--color-ink);
+}
+.priority-high {
+    background: var(--color-ember);
+    color: #fff;
+}
+
 /* ---- Controls row: filters (left) + search/export (right) --------------
    One flex row so the two blocks read as a single control bar. The filters
    column is the flex item that can shrink/wrap; search/export sits at
@@ -479,6 +780,7 @@ tbody tr:last-child td {
 
 td {
     color: var(--color-ink);
+    transition: background-color 0.6s ease;
 }
 
 /* Flagged rows: a soft red background tint only -- no vertical accent bar.
@@ -486,6 +788,14 @@ td {
    without becoming a decorative stripe. */
 tr.flagged td {
     background: rgba(231, 0, 11, 0.04);
+}
+
+/* Phase F3: brief highlight for "Open next unreviewed attempt" -- a neutral
+   ink tint (not the destructive ember used for flagged rows, since this is
+   just drawing the eye, not signaling a suspicious pattern), added then
+   removed after a short delay so the transition above fades it back out. */
+tr.assistant-highlight td {
+    background: rgba(10, 10, 10, 0.08);
 }
 
 /* ---- Review status (Phase E2/E3, Attempts tab only) ---------------------
