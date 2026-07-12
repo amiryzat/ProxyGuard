@@ -1,0 +1,166 @@
+/* checkin_app/static/css/evaluation.css -- Evaluation Mode, split out of
+   checkin.css for file separation (Evaluation Mode bug-fix pass). Reuses
+   .card/.field/.btn/.btn-primary/.btn-ghost/.error/.session-badge from
+   checkin.css wholesale (same design system, loaded alongside this file on
+   evaluation.html) -- only the evaluation-specific bits live here. */
+
+.eval-active-session {
+    margin: 0 0 16px;
+    font-size: 13px;
+    color: var(--color-mid-gray);
+}
+
+.eval-sync-line {
+    display: block;
+    margin-top: 4px;
+}
+.eval-sync-ok {
+    color: var(--color-ink);
+}
+
+.eval-trial-label {
+    margin: 4px 0 12px;
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 12px;
+    color: var(--color-mid-gray);
+    min-height: 1em;
+}
+
+.eval-timer-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--color-hairline);
+}
+.eval-timer {
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--color-ink);
+    min-width: 4.5rem;
+}
+.eval-status-text {
+    font-size: 13px;
+    color: var(--color-mid-gray);
+}
+
+.eval-hint {
+    margin: 12px 0 0;
+    font-size: 12px;
+    color: var(--color-mid-gray);
+}
+
+#attachFallbackBtn,
+#nextTrialBtn {
+    margin-top: 12px;
+}
+
+.eval-section-title {
+    margin: 0 0 16px;
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--color-ink);
+}
+
+.eval-metrics-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px;
+}
+.eval-metric {
+    min-width: 9rem;
+}
+.eval-metric-value {
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -0.3px;
+    color: var(--color-ink);
+}
+.eval-metric-label {
+    margin-top: 4px;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--color-mid-gray);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.eval-table-wrap {
+    overflow-x: auto;
+}
+.eval-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+.eval-table th {
+    text-align: left;
+    padding: 8px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--color-mid-gray);
+    border-bottom: 1px solid var(--color-hairline);
+    white-space: nowrap;
+}
+.eval-table td {
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--color-hairline);
+    color: var(--color-ink);
+    vertical-align: top;
+}
+.eval-table tr:last-child td {
+    border-bottom: none;
+}
+
+.eval-reason {
+    font-size: 12px;
+    color: var(--color-mid-gray);
+}
+.eval-snapshot-note {
+    font-size: 11px;
+    color: var(--color-mid-gray);
+}
+
+.eval-empty {
+    margin: 0;
+    font-size: 13px;
+    color: var(--color-mid-gray);
+}
+
+/* Pass/fail/pending/cancelled badges -- same restrained treatment used
+   throughout the project: neutral for pending/cancelled, and only "fail"
+   gets the reserved destructive red (DESIGN.md's single-destructive-red
+   rule). Cancelled is deliberately NOT red -- it isn't a failed test, it's
+   an aborted one (the session changed mid-trial). */
+.eval-badge {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    padding: 2px 10px;
+    border-radius: var(--radius-badges);
+    border: 1px solid var(--color-hairline);
+    background: var(--color-canvas);
+    color: var(--color-mid-gray);
+}
+.eval-badge-pass {
+    background: rgba(21, 128, 61, 0.08);
+    border-color: rgba(21, 128, 61, 0.25);
+    color: #15803d;
+}
+.eval-badge-fail {
+    background: rgba(231, 0, 11, 0.06);
+    border-color: rgba(231, 0, 11, 0.25);
+    color: var(--color-ember);
+}
+.eval-badge-pending,
+.eval-badge-cancelled {
+    background: var(--color-canvas);
+    border-color: var(--color-hairline);
+    color: var(--color-mid-gray);
+}

@@ -1,0 +1,76 @@
+{# Report Support Phase R1: Evaluation Summary + Test Case Matrix. Re-rendered
+   by GET /evaluation_panel after a trial is started/finalized/corrected, so
+   evaluation.js can refresh this in place -- mirrors _assistant_panel.html's
+   role for the ProxyGuard Assistant on the main dashboard. #}
+
+<div class="analytics">
+    <h2>Evaluation Summary</h2>
+    <div class="analytics-grid">
+        {% for key in ["recognition_accuracy", "unknown_rejection_rate", "liveness_detection_rate",
+                       "duplicate_detection_rate", "proxy_blocking_rate", "false_accept_rate", "false_reject_rate"] %}
+        {% set m = summary[key] %}
+        <div class="stat-box">
+            <div class="stat-value {% if m.pct is none %}warn{% elif m.pct >= 80 %}good{% elif m.pct >= 50 %}warn{% else %}bad{% endif %}">
+                {{ (m.pct ~ "%") if m.pct is not none else "N/A" }}
+            </div>
+            <div class="stat-label">{{ m.label }} ({{ m.n }}/{{ m.total }})</div>
+        </div>
+        {% endfor %}
+        {% set avg = summary.avg_checkin_time %}
+        <div class="stat-box">
+            <div class="stat-value">{{ (avg.value ~ "s") if avg.value is not none else "N/A" }}</div>
+            <div class="stat-label">{{ avg.label }} (n={{ avg.total }})</div>
+        </div>
+    </div>
+</div>
+
+<div class="table-card" id="evaluation-matrix">
+{% if trials %}
+<table>
+    <thead>
+        <tr>
+            <th>Test ID</th>
+            <th>Scenario</th>
+            <th>Expected Outcome</th>
+            <th>Actual Result</th>
+            <th>Reason</th>
+            <th>Duration</th>
+            <th>Status</th>
+            <th>Notes</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for t in trials %}
+        <tr class="attendance-row" data-trial-id="{{ t.trial_id }}">
+            <td>{{ t.trial_id }}</td>
+            <td>{{ t.test_scenario }}</td>
+            <td>{{ t.expected_outcome }}</td>
+            <td>
+                {% if t.actual_name %}<strong>{{ t.actual_name }}</strong>{% endif %}
+                {{ t.actual_result or "—" }}
+                {% if t.snapshot_filename %}
+                <br>
+                <a href="{{ url_for('snapshot', filename=t.snapshot_filename) }}" target="_blank"
+                   rel="noopener" title="Open snapshot in a new tab" class="snapshot-thumb-link">
+                    <img class="snapshot-thumb" src="{{ url_for('snapshot', filename=t.snapshot_filename) }}" alt="verification snapshot">
+                </a>
+                {% endif %}
+            </td>
+            <td>{{ t.actual_reason or "—" }}</td>
+            <td>{{ (t.duration_seconds ~ "s") if t.duration_seconds else "—" }}</td>
+            <td><span class="review-badge eval-badge-{{ t.pass_fail }}">{{ t.pass_fail | replace("_", " ") }}</span></td>
+            <td class="eval-notes-cell" data-trial-id="{{ t.trial_id }}">
+                <div class="review-actions">
+                    <button type="button" class="review-btn eval-correct-btn" data-pass-fail="pass">Mark Pass</button>
+                    <button type="button" class="review-btn eval-correct-btn" data-pass-fail="fail">Mark Fail</button>
+                </div>
+                <input type="text" class="eval-notes-input" placeholder="Add a note..." value="{{ t.notes }}">
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p class="empty">No evaluation trials recorded yet for this scope.</p>
+{% endif %}
+</div>

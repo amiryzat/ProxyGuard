@@ -5,6 +5,7 @@ numpy
 pandas
 SpeechRecognition
 PyAudio
+matplotlib
 
 # Optional, planned for a later lecturer-facing dashboard
 # Flask

@@ -249,6 +249,38 @@ class CheckinSession:
         # held -- see the duplicate-check-in bypass in process_frame.
         self.duplicate_checked_name = None
 
+        # ---- Evaluation Timing Phase R2: attempt timing -----------------
+        # All *_at fields are time.monotonic() readings, never formatted
+        # wall-clock timestamps (a system-clock change or DST jump must not
+        # be able to produce a negative or wildly wrong duration -- see
+        # requirement 2). Each is set at most once per attempt (guarded by
+        # its own "is None" check at the call site) and never touched again
+        # until the next reset() -- see requirements 3/5/7.
+        #   attempt_started_at   -- first processed frame with exactly one
+        #                           face, pre-lock (requirement 4).
+        #   identity_decided_at  -- the instant identified_name first becomes
+        #                           a real registered name (requirement 5),
+        #                           or -- if the attempt reaches a terminal
+        #                           outcome having never recognized anyone --
+        #                           the terminal instant itself, since an
+        #                           "Unknown" classification only becomes
+        #                           final once the attempt gives up.
+        #   challenge_started_at -- first frame mediapipe actually resolves
+        #                           landmarks for the single tracked face
+        #                           (i.e. blink/head-pose evaluation is
+        #                           genuinely running), not merely "a face is
+        #                           present" -- requirement 6.
+        #   terminal_outcome_at   -- set once, alongside outcome_logged.
+        # recognition/liveness/decision_duration_seconds are the *_at fields'
+        # differences, computed once and frozen -- see requirement 3.
+        self.attempt_started_at = None
+        self.identity_decided_at = None
+        self.challenge_started_at = None
+        self.terminal_outcome_at = None
+        self.recognition_duration_seconds = None
+        self.liveness_duration_seconds = None
+        self.decision_duration_seconds = None
+
         # flow_phase drives what's on screen after the head-movement/blink
         # challenge locks in: liveness_success -> confirmed, or
         # liveness_success -> not_recognized, or liveness_failed. confirmed /
@@ -354,6 +386,16 @@ class CheckinSession:
                 self.last_confirmed_time = time.time()
                 self.different_name_streak = 0
                 self.pending_reverify = False
+                # Evaluation Timing Phase R2: the first time this attempt
+                # ever reaches a stable registered identity -- set once, see
+                # requirement 5 (never overwritten by a later continuity
+                # break/re-recognition within the same attempt).
+                if self.identity_decided_at is None:
+                    self.identity_decided_at = time.monotonic()
+                    if self.attempt_started_at is not None:
+                        self.recognition_duration_seconds = round(
+                            self.identity_decided_at - self.attempt_started_at, 1
+                        )
             return
 
         if len(face_locations) == 1:
@@ -426,6 +468,80 @@ class CheckinSession:
             self.flow_phase = "duplicate_checkin"
             self.confirmed_name = None
 
+    def _timing_overlay_text(self):
+        """
+        Small in-camera timer text (requirement 8/9): "Waiting for face"
+        before an attempt starts, "Attempt N.Ns" while recognition is still
+        undecided, "Recognized N.Ns | Total N.Ns" once a registered identity
+        is stable, frozen at its final value once a terminal outcome is
+        reached (both *_duration_seconds fields stop changing at that point,
+        so this naturally freezes with no extra state).
+        """
+        if self.attempt_started_at is None:
+            return "Waiting for face"
+
+        if self.terminal_outcome_at is not None:
+            elapsed = self.decision_duration_seconds
+        else:
+            elapsed = time.monotonic() - self.attempt_started_at
+
+        if self.identity_decided_at is not None and self.recognition_duration_seconds is not None:
+            return f"Recognized {self.recognition_duration_seconds:.1f}s | Total {elapsed:.1f}s"
+        return f"Attempt {elapsed:.1f}s"
+
+    def timing_snapshot(self):
+        """
+        Read-only timing summary for /status consumers (checkin_app) and
+        Evaluation Mode (requirement 10) -- monotonic-derived durations only,
+        never formatted wall-clock timestamps.
+        """
+        if self.attempt_started_at is None:
+            timing_phase = "waiting"
+            attempt_elapsed_seconds = None
+        else:
+            attempt_elapsed_seconds = round(
+                self.decision_duration_seconds if self.terminal_outcome_at is not None
+                else time.monotonic() - self.attempt_started_at,
+                1,
+            )
+            if self.terminal_outcome_at is not None:
+                timing_phase = "terminal"
+            elif self.identity_decided_at is not None:
+                timing_phase = "liveness"
+            else:
+                timing_phase = "recognizing"
+
+        return {
+            "timing_phase": timing_phase,
+            "attempt_elapsed_seconds": attempt_elapsed_seconds,
+            "recognition_duration_seconds": self.recognition_duration_seconds,
+            "liveness_duration_seconds": self.liveness_duration_seconds,
+            "decision_duration_seconds": self.decision_duration_seconds,
+        }
+
+    def _record_terminal_timing(self):
+        """
+        Evaluation Timing Phase R2: terminal timing, computed once per
+        attempt -- the call site (process_frame) is guarded by the same
+        outcome_logged check that guards logging/snapshotting (requirement
+        7), so this never recalculates on a later frame while the terminal
+        message is still on screen. Extracted into its own method (matching
+        _update_identity_continuity/_check_duplicate_checkin's existing
+        pattern) so it's directly unit-testable without running the full
+        cv2/mediapipe pipeline -- see src/test_attempt_timing.py.
+        """
+        self.terminal_outcome_at = time.monotonic()
+        if self.attempt_started_at is not None:
+            self.decision_duration_seconds = round(
+                self.terminal_outcome_at - self.attempt_started_at, 1
+            )
+        if self.identity_decided_at is None:
+            # Never recognized a registered identity this attempt -- the
+            # "Unknown" classification only becomes final once the attempt
+            # concludes without one (requirement 5).
+            self.identity_decided_at = self.terminal_outcome_at
+            self.recognition_duration_seconds = self.decision_duration_seconds
+
     def process_frame(self, frame):
         """
         Run one frame through recognition + liveness + the flow_phase state
@@ -463,6 +579,16 @@ class CheckinSession:
 
             self.last_names = names
             self.last_face_locations = scaled_locations
+
+            # Evaluation Timing Phase R2: the attempt clock starts the first
+            # time exactly one face is seen this attempt, pre-lock -- never
+            # while 0 or 2+ faces are present (requirement 4), never
+            # restarted afterward (requirement 3). Set here, before the
+            # continuity/duplicate checks below, so identity_decided_at
+            # (which they may set this same frame) always has a valid
+            # attempt_started_at to measure against.
+            if self.attempt_started_at is None and not self.check_locked and len(scaled_locations) == 1:
+                self.attempt_started_at = time.monotonic()
 
             if not self.check_locked:
                 # Identity-liveness continuity guard (anti-proxy face swap):
@@ -551,6 +677,25 @@ class CheckinSession:
                     ear, blinked, total_blinks = self.blink_detector.update(landmarks, frame_width, frame_height)
                     direction, h_offset, v_offset = get_head_pose(landmarks, frame_width, frame_height)
 
+                    # Evaluation Timing Phase R2: the challenge is "started"
+                    # the first frame it's actually being evaluated (real
+                    # landmarks resolved for the single tracked face), not
+                    # merely "a face is present" -- requirement 6.
+                    if self.challenge_started_at is None:
+                        self.challenge_started_at = time.monotonic()
+                    # mediapipe's FaceMesh runs every frame here, while
+                    # attempt_started_at (line ~590) is normally set from
+                    # face_recognition's detector, which only runs every 3rd
+                    # frame and can occasionally miss a face mediapipe still
+                    # resolves. Without this fallback, a challenge can run and
+                    # even time out to liveness_failed while
+                    # attempt_started_at is still None, leaving every timing
+                    # field stuck (decision_duration_seconds never computed).
+                    # Real landmarks resolving here is just as valid evidence
+                    # of "one usable face" as recognition's own detector.
+                    if self.attempt_started_at is None and not self.check_locked:
+                        self.attempt_started_at = self.challenge_started_at
+
                     cv2.putText(frame, f"Blinks: {total_blinks}", (30, 40), cv2.FONT_HERSHEY_DUPLEX, 0.7, (0, 255, 0), 2)
 
                     raw_status = self.challenge.check(direction)
@@ -597,6 +742,8 @@ class CheckinSession:
                     self.locked_status = "passed"
                     self.flow_phase = "liveness_success"
                     self.phase_start = time.time()
+                    if self.challenge_started_at is not None:
+                        self.liveness_duration_seconds = round(time.monotonic() - self.challenge_started_at, 1)
                     # identified_name is only ever set/kept by
                     # _update_identity_continuity, which clears it immediately
                     # on a spatial jump or a different real identity, and
@@ -613,6 +760,8 @@ class CheckinSession:
                     self.locked_status = "failed"
                     self.flow_phase = "liveness_failed"
                     self.confirmed_name = None
+                    if self.challenge_started_at is not None:
+                        self.liveness_duration_seconds = round(time.monotonic() - self.challenge_started_at, 1)
 
         if self.check_locked:
             bottom_msg = None
@@ -658,6 +807,8 @@ class CheckinSession:
             if not self.outcome_logged and self.flow_phase in (
                 "confirmed", "not_recognized", "liveness_failed", "identity_mismatch", "duplicate_checkin"
             ):
+                self._record_terminal_timing()
+
                 if self.flow_phase == "confirmed":
                     log_result, log_reason = "success", "confirmed"
                 elif self.flow_phase == "not_recognized":
@@ -728,6 +879,15 @@ class CheckinSession:
                 restart_size = cv2.getTextSize(self.restart_hint, cv2.FONT_HERSHEY_DUPLEX, 0.6, 1)[0]
                 restart_x = (frame_width - restart_size[0]) // 2
                 cv2.putText(frame, self.restart_hint, (restart_x, frame_height - 10), cv2.FONT_HERSHEY_DUPLEX, 0.6, (200, 200, 200), 1)
+
+        # Timer overlay (requirement 8): small, top-right, drawn last so it's
+        # never covered -- deliberately placed opposite the top-left
+        # "Blinks: N" counter and well clear of the face box/instruction/
+        # warning text near frame center and bottom.
+        timer_text = self._timing_overlay_text()
+        timer_size = cv2.getTextSize(timer_text, cv2.FONT_HERSHEY_DUPLEX, 0.6, 1)[0]
+        timer_x = frame_width - timer_size[0] - 20
+        cv2.putText(frame, timer_text, (timer_x, 30), cv2.FONT_HERSHEY_DUPLEX, 0.6, (200, 200, 200), 1)
 
         return frame
 

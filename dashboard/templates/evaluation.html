@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ProxyGuard Evaluation</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
+</head>
+<body>
+    <div class="page-container">
+        <header class="page-header">
+            <div>
+                <h1 class="page-title">Evaluation Metrics</h1>
+                <p class="live-caption">Controlled test trials for the IEEE report's Results section. Read-only against attendance data; writes only to <code>logs/evaluation_trials.csv</code>.</p>
+            </div>
+            <a href="{{ url_for('index') }}" class="export-btn">&larr; Back to Dashboard</a>
+        </header>
+
+        {# Session + scope filter: a real GET so it's bookmarkable/shareable like
+           the main dashboard's own session filter. The same #session value is
+           also read directly by evaluation.js as "which session to tag the next
+           trial with" -- one control, per Section 2 of the brief ("selects the
+           active session ID"), rather than a second redundant dropdown. #}
+        <form method="get" action="{{ url_for('evaluation') }}" id="scopeForm">
+            <input type="hidden" name="scope" id="scopeField" value="{{ scope }}">
+            {% if sessions %}
+            <div class="filter">
+                <label for="session">Session</label>
+                <select id="session" name="session" onchange="this.form.submit()">
+                    {% for s in sessions %}
+                    <option value="{{ s }}" {% if s == selected_session %}selected{% endif %}>{{ s }}</option>
+                    {% endfor %}
+                </select>
+                <label class="eval-scope-toggle">
+                    <input type="checkbox" id="scopeAll" {% if scope == 'all' %}checked{% endif %}>
+                    Show all sessions in summary/matrix below
+                </label>
+            </div>
+            {% else %}
+            <p class="empty">No attendance sessions found yet -- start a check-in session first.</p>
+            {% endif %}
+        </form>
+
+        <div class="analytics">
+            <h2>Start New Trial</h2>
+            <div class="eval-trial-grid">
+                <div class="filter">
+                    <label for="testScenario">Test scenario</label>
+                    <select id="testScenario">
+                        {% for sc in test_scenarios %}
+                        <option value="{{ sc }}">{{ sc }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="filter">
+                    <label for="expectedOutcome">Expected outcome</label>
+                    <select id="expectedOutcome">
+                        {% for eo in expected_outcomes %}
+                        <option value="{{ eo }}">{{ eo }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+            <div class="eval-trial-actions">
+                <button type="button" id="startTrialBtn" class="export-btn eval-btn-primary" {% if not sessions %}disabled{% endif %}>Start Trial</button>
+                <button type="button" id="attachLatestBtn" class="export-btn" disabled>Attach latest attendance attempt</button>
+            </div>
+            <div class="eval-timer-row" id="timerRow" hidden>
+                <span class="eval-timer" id="timerDisplay">0.0s</span>
+                <span class="eval-status-text" id="trialStatusText">Waiting for matching check-in result&hellip;</span>
+            </div>
+            <p class="eval-hint">Start a trial, then perform the check-in attempt on the normal check-in page. This page polls for the newest matching attendance row automatically; use the fallback button above if it doesn't appear.</p>
+        </div>
+
+        <div id="evaluation-panel-target">
+            {% include "_evaluation_panel.html" %}
+        </div>
+
+        <div class="eval-export-row">
+            <button type="button" id="exportTrialsBtn" class="export-btn">Export Evaluation CSV</button>
+            <button type="button" id="exportMetricsBtn" class="export-btn">Export Metrics Summary CSV</button>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/evaluation.js') }}"></script>
+</body>
+</html>

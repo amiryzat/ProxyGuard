@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ProxyGuard Evaluation</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/checkin.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/evaluation.css') }}">
+</head>
+<body data-setup-url="{{ url_for('setup') }}">
+    <div class="page-container">
+        <h1 class="page-title">Evaluation Mode</h1>
+        <p class="page-subtitle">Automated trial recording for the report's Results section. Reuses the normal check-in flow -- performs no recognition of its own.</p>
+
+        {# Session-sync status: rewritten in place by evaluation.js on every
+           poll tick (GET /evaluation/current-session, every few seconds), so
+           an active/inactive session change is reflected without a page
+           reload. Server-rendered content below is just the first paint. #}
+        <div class="card page-section" id="sessionSyncCard">
+            <div id="sessionSyncStatus" class="{{ 'eval-active-session' if active_session_id else 'error' }}">
+                {% if active_session_id %}
+                <span class="eval-sync-ok">Synced with active check-in session</span>
+                <span class="eval-sync-line">Session: <span class="session-badge">{{ active_session_id }}</span></span>
+                {% else %}
+                No active check-in session. <a href="{{ url_for('setup') }}">Start a session from the session picker</a> first.
+                {% endif %}
+            </div>
+
+            <div class="field">
+                <label for="participantSelect">Participant</label>
+                <select id="participantSelect">
+                    {% for code, info in participants.items() %}
+                    <option value="{{ code }}">{{ code }} &mdash; {{ info.identity }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div class="field">
+                <label for="scenarioSelect">Scenario</label>
+                <select id="scenarioSelect">
+                    {% for sc in scenarios %}
+                    <option value="{{ sc }}">{{ sc }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <p class="eval-trial-label" id="trialLabelPreview"></p>
+
+            <button type="button" id="startTrialBtn" class="btn btn-primary" {% if not active_session_id %}disabled{% endif %}>Start Trial</button>
+
+            <div class="eval-timer-row" id="timerRow" hidden>
+                <span class="eval-timer" id="timerDisplay">0.0s</span>
+                <span class="eval-status-text" id="statusText">Perform the check-in attempt now&hellip;</span>
+            </div>
+
+            <p class="eval-hint" id="evalHint">Physically perform the check-in attempt on the normal check-in page right after clicking Start Trial. This page detects the result automatically.</p>
+
+            <button type="button" id="attachFallbackBtn" class="btn btn-ghost" hidden>Attach latest attendance attempt (fallback)</button>
+            <button type="button" id="nextTrialBtn" class="btn btn-ghost" hidden>Start Next Trial</button>
+        </div>
+
+        <div id="evaluation-panel-target">
+            {% include "_evaluation_panel.html" %}
+        </div>
+
+        <div class="action-area">
+            <button type="button" id="exportCsvBtn" class="btn btn-ghost">Export Evaluation CSV</button>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/evaluation.js') }}"></script>
+</body>
+</html>

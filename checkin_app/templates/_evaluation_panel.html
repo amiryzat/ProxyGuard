@@ -1,0 +1,67 @@
+{# Report Support Phase R1: Evaluation Summary + results table. Re-rendered by
+   GET /evaluation_panel after a trial is finalized, so evaluation.js can
+   refresh this in place -- mirrors dashboard/app.py's _assistant_panel.html
+   role for the same reason. #}
+
+<div class="card page-section">
+    <h2 class="eval-section-title">Evaluation Summary</h2>
+    <div class="eval-metrics-grid">
+        {% for key in ["recognition_accuracy", "genuine_acceptance_rate", "false_rejection_rate",
+                       "unknown_rejection_rate", "unknown_false_accept_rate", "liveness_detection_rate",
+                       "duplicate_detection_rate", "photo_attack_rejection_rate",
+                       "mean_recognition_time", "mean_genuine_decision_time", "mean_unknown_rejection_time",
+                       "mean_duplicate_detection_time", "mean_liveness_failure_time", "mean_photo_rejection_time"] %}
+        {% set m = summary[key] %}
+        <div class="eval-metric">
+            <div class="eval-metric-value">{{ m.text }}</div>
+            <div class="eval-metric-label">{{ m.label }}</div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+<div class="card page-section">
+    <h2 class="eval-section-title">Trial Results</h2>
+    {% if trials %}
+    <div class="eval-table-wrap">
+        <table class="eval-table">
+            <thead>
+                <tr>
+                    <th>Trial ID</th>
+                    <th>Participant</th>
+                    <th>Scenario</th>
+                    <th>Expected</th>
+                    <th>Actual</th>
+                    <th>Duration</th>
+                    <th>Result</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for t in trials %}
+                <tr>
+                    <td>{{ t.trial_id }}</td>
+                    <td>{{ t.participant_code }}</td>
+                    <td>{{ t.scenario }}</td>
+                    <td>{{ t.expected_identity }} &middot; {{ t.expected_result }}</td>
+                    <td>
+                        {% if t.passed == "pending" %}
+                        <span class="eval-badge eval-badge-pending">waiting&hellip;</span>
+                        {% else %}
+                        {{ t.actual_identity }} &middot; {{ t.actual_result }}
+                        {% if t.actual_reason %}<br><span class="eval-reason">{{ t.actual_reason }}</span>{% endif %}
+                        {% if t.snapshot_filename %}
+                        <br><span class="eval-snapshot-note" title="{{ t.snapshot_filename }}">snapshot saved</span>
+                        {% endif %}
+                        {% endif %}
+                    </td>
+                    <td>{{ (t.duration_seconds ~ "s") if t.duration_seconds else "—" }}</td>
+                    <td><span class="eval-badge eval-badge-{{ t.passed }}">{{ t.passed | upper }}</span></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="eval-empty">No trials recorded yet.</p>
+    {% endif %}
+</div>

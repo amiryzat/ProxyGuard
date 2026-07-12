@@ -12,10 +12,13 @@
 # src/main.CheckinSession -- this app only changes how frames are delivered
 # (webcam -> MJPEG) and displayed (OpenCV window -> browser).
 
+import csv
+import io
 import os
 import sys
 import time
 import threading
+from datetime import datetime
 
 from flask import (
     Flask, render_template, request, redirect, url_for, Response, jsonify
@@ -31,8 +34,11 @@ if SRC_DIR not in sys.path:
 from class_config import CLASS_SUBJECTS, WEEK_MIN, WEEK_MAX, build_session_id
 from face_recognizer import load_known_faces
 from main import CheckinSession
+from attendance_logger import has_success_this_session
 
 import cv2
+
+import evaluation
 
 app = Flask(__name__)
 
@@ -226,12 +232,21 @@ def status():
     """
     session = _station["session"]
     if session is None:
-        return jsonify({"active": False, "phase": None, "can_reset": False, "message": None})
+        return jsonify({
+            "active": False, "phase": None, "can_reset": False, "message": None,
+            # Evaluation Timing Phase R2 (requirement 10): additive fields
+            # only -- existing consumers reading active/phase/can_reset/
+            # message are unaffected.
+            "timing_phase": "waiting", "attempt_elapsed_seconds": None,
+            "recognition_duration_seconds": None, "liveness_duration_seconds": None,
+            "decision_duration_seconds": None,
+        })
     return jsonify({
         "active": True,
         "phase": session.flow_phase,
         "can_reset": session.can_reset(),
         "message": session.banner,
+        **session.timing_snapshot(),
     })
 
 
@@ -278,6 +293,207 @@ def end_session():
     """
     _end_station()
     return ("", 204)
+
+
+# ---- Report Support Phase R1: simplified automated evaluation mode ---------
+# Runs entirely by observing the same logs/attendance.csv the normal check-in
+# flow already writes -- no second recognition path, no changes to
+# CheckinSession. The tester picks a participant code + scenario and clicks
+# Start Trial; everything else (trial numbering, timer, result capture,
+# PASS/FAIL grading, CSV logging) is automatic. See checkin_app/evaluation.py
+# for the data layer this just wires up as routes.
+
+@app.route("/evaluation")
+def evaluation_page():
+    """
+    Render the evaluation page. The active session is whatever the one
+    physical check-in station is currently running (read lock-free, same
+    convention as /status below) -- there is only ever one session a tester
+    can actually perform check-ins against, so this is shown as the trial's
+    session rather than offered as a free-choice dropdown.
+    """
+    active_session_id = _station["session_id"]
+    trials = list(evaluation.read_trials().values())
+    trials.sort(key=lambda t: t.get("start_timestamp", ""), reverse=True)
+    summary = evaluation.build_summary(trials)
+
+    return render_template(
+        "evaluation.html",
+        active_session_id=active_session_id,
+        active_subject=_station["subject"],
+        active_week=_station["week"],
+        participants=evaluation.PARTICIPANTS,
+        scenarios=evaluation.SCENARIOS,
+        trials=trials,
+        summary=summary,
+    )
+
+
+@app.route("/evaluation_panel")
+def evaluation_panel():
+    """Re-renders just the results table + summary, so the page can refresh
+    in place after a trial is finalized -- mirrors dashboard/app.py's
+    /assistant_panel pattern for the same reason (AJAX-refreshable fragment,
+    no duplicated markup between the full page and the refresh)."""
+    trials = list(evaluation.read_trials().values())
+    trials.sort(key=lambda t: t.get("start_timestamp", ""), reverse=True)
+    summary = evaluation.build_summary(trials)
+    return render_template("_evaluation_panel.html", trials=trials, summary=summary)
+
+
+@app.route("/evaluation/current-session")
+def evaluation_current_session():
+    """
+    Lightweight polling endpoint (Evaluation Mode bug fix, requirement 2/3):
+    lets the evaluation page detect an active-session change (or a session
+    starting/ending) without a full page reload. Read lock-free, same
+    convention as /status above -- a slightly stale read is fine for a
+    few-second poll.
+    """
+    return jsonify({
+        "active": _station["session_id"] is not None,
+        "session_id": _station["session_id"],
+        "subject": _station["subject"],
+        "week": _station["week"],
+    })
+
+
+@app.route("/evaluation/cancel", methods=["POST"])
+def evaluation_cancel():
+    """
+    Cancel a still-pending trial safely (requirement 8) -- used when the
+    active check-in session changes while a trial is running, so it never
+    silently attaches an attendance row from the wrong session. Marks the
+    trial "cancelled" rather than leaving it "pending" forever, which would
+    otherwise keep matching every future /evaluation/check poll against a
+    now-stale session_id.
+    """
+    data = request.get_json(silent=True) or request.form
+    trial_id = data.get("trial_id") or ""
+    trial = evaluation.read_trials().get(trial_id)
+    if trial is None:
+        return jsonify({"error": "unknown trial_id"}), 404
+    if trial.get("passed") != "pending":
+        return jsonify({"trial": trial})  # already finalized -- nothing to cancel
+    return jsonify({"trial": evaluation.cancel_trial(trial)})
+
+
+@app.route("/evaluation/start", methods=["POST"])
+def evaluation_start():
+    """
+    Start Trial: participant_code + scenario only -- trial number,
+    session_id (from the active station), expected identity/result, and the
+    start timestamp are all derived automatically, never supplied by the
+    client. Writes a "pending" row immediately so it survives a page reload
+    mid-trial and shows up in the results table right away.
+    """
+    data = request.get_json(silent=True) or request.form
+    participant_code = data.get("participant_code") or ""
+    scenario = data.get("scenario") or ""
+
+    session_id = _station["session_id"]
+    if not session_id:
+        return jsonify({"error": "No active check-in session -- start one from the setup page first."}), 400
+    if participant_code not in evaluation.PARTICIPANTS:
+        return jsonify({"error": "Unknown participant code."}), 400
+    if scenario not in evaluation.SCENARIOS:
+        return jsonify({"error": "Unknown scenario."}), 400
+
+    participant = evaluation.PARTICIPANTS[participant_code]
+    expected_identity = participant["identity"]
+    expected_result = evaluation.expected_result_for(scenario)
+
+    if scenario == "Duplicate Check-in":
+        if participant["type"] != "registered":
+            return jsonify({"error": "Duplicate Check-in requires a registered participant (R1-R3)."}), 400
+        if not has_success_this_session(expected_identity, session_id):
+            return jsonify({
+                "error": f"{participant_code} does not have a successful check-in in this session yet -- "
+                         "run a Genuine Check-in trial for them first, then retry Duplicate Check-in."
+            }), 400
+
+    trials = list(evaluation.read_trials().values())
+    trial_number = evaluation.next_trial_number(trials, participant_code, scenario)
+    trial_id = f"{participant_code}-{scenario.replace(' ', '_')}-{trial_number}"
+    start_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    trial = evaluation.write_trial(
+        trial_id,
+        participant_code=participant_code, participant_type=participant["type"],
+        scenario=scenario, trial_number=trial_number, session_id=session_id,
+        expected_identity=expected_identity, expected_result=expected_result,
+        start_timestamp=start_timestamp, passed="pending",
+    )
+    return jsonify({"trial": trial, "label": f"{participant_code} - {scenario} - Trial {trial_number}"})
+
+
+@app.route("/evaluation/check")
+def evaluation_check():
+    """
+    Polled every few seconds while a trial is pending: looks for the newest
+    attendance row in the trial's own session logged at or after the
+    trial's start time, and finalizes the trial the instant one appears.
+    """
+    trials = evaluation.read_trials()
+    pending = [t for t in trials.values() if t.get("passed") == "pending"]
+    if not pending:
+        return jsonify({"active": False})
+
+    active = max(pending, key=lambda t: t.get("start_timestamp", ""))
+    start_dt = datetime.strptime(active["start_timestamp"], "%Y-%m-%d %H:%M:%S")
+    match = evaluation.find_attendance_row_after(evaluation.read_attendance_rows(), active["session_id"], start_dt)
+    if match is None:
+        # Include the full pending trial (not just its id) so a page reload
+        # mid-trial can resume the client-side timer/session lock correctly.
+        return jsonify({"active": True, "trial_id": active["trial_id"], "matched": False, "trial": active})
+
+    # Evaluation Timing Phase R2: the live CheckinSession still holds the
+    # monotonic-clock timing for the attempt that JUST produced this
+    # attendance row (reset() -- "New check-in" -- hasn't run yet, since
+    # that only happens after this trial is finalized), so pull the real
+    # recognition/liveness/decision durations from it rather than only the
+    # wall-clock start/end timestamps evaluation.py would otherwise fall
+    # back to. Best-effort: if the station was somehow already reset before
+    # this poll landed, timing is simply omitted (falls back to wall-clock).
+    live_session = _station["session"]
+    timing = live_session.timing_snapshot() if live_session is not None else None
+    trial = evaluation.finalize_trial(active, match, timing=timing)
+    return jsonify({"active": True, "trial_id": active["trial_id"], "matched": True, "trial": trial})
+
+
+@app.route("/evaluation/attach", methods=["POST"])
+def evaluation_attach():
+    """Small fallback, only for when automatic detection above hasn't
+    matched yet: attach the latest attendance row from the trial's own
+    session regardless of timing."""
+    data = request.get_json(silent=True) or request.form
+    trial_id = data.get("trial_id") or ""
+    trial = evaluation.read_trials().get(trial_id)
+    if trial is None:
+        return jsonify({"error": "unknown trial_id"}), 404
+
+    latest = next((r for r in evaluation.read_attendance_rows() if r.get("session_id") == trial["session_id"]), None)
+    if latest is None:
+        return jsonify({"error": "no attendance rows found for this trial's session yet"}), 404
+
+    live_session = _station["session"]
+    timing = live_session.timing_snapshot() if live_session is not None else None
+    return jsonify({"trial": evaluation.finalize_trial(trial, latest, timing=timing)})
+
+
+@app.route("/evaluation/export.csv")
+def evaluation_export_csv():
+    trials = list(evaluation.read_trials().values())
+    trials.sort(key=lambda t: t.get("start_timestamp", ""))
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(evaluation.EVALUATION_HEADERS)
+    for t in trials:
+        writer.writerow([t.get(h, "") for h in evaluation.EVALUATION_HEADERS])
+    return Response(
+        buffer.getvalue(), mimetype="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="proxyguard_evaluation_trials_{datetime.now().strftime("%Y-%m-%d")}.csv"'},
+    )
 
 
 if __name__ == "__main__":
