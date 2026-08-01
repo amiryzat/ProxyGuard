@@ -1,7 +1,3 @@
-# src/voice_challenge.py
-# Handles the voice liveness challenge. Generates a random number, listens
-# through the microphone, and checks if the spoken number matches. This
-# only checks that a correct number was said in time, not who said it.
 
 import random
 import speech_recognition as sr

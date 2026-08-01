@@ -15,6 +15,7 @@ Detailed documentation is located in the `docs/` folder.
 - [[bugs]]
 - [[report]]
 - [[flowchart]]
+- [[demo]]
 
 
 ## Project Overview

@@ -1,33 +1,16 @@
-# src/face_recognizer.py
-# Handles face recognition, matching detected faces against known students.
-# Loads reference photos from data/known_faces, converts them into face
-# encodings, and compares live detected faces against those encodings to
-# identify who the face belongs to.
-
 import face_recognition
 import os
 import numpy as np
 from PIL import Image, ImageOps
 
-# Resolve the known_faces folder relative to this script's own location,
-# so it works correctly regardless of what working directory it's run from
-# (PyCharm run button, PyCharm terminal, regular terminal, or Claude Code).
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_KNOWN_FACES_DIR = os.path.join(SCRIPT_DIR, "..", "data", "known_faces")
 
-
 def load_image_with_correct_orientation(path):
-    """
-    Loads an image using PIL and corrects rotation based on EXIF metadata.
-    Many phone photos store rotation as metadata rather than physically
-    rotating the pixels, which face_recognition does not account for on
-    its own. This ensures the image is upright before face detection runs.
-    """
     image = Image.open(path)
     image = ImageOps.exif_transpose(image)
     image = image.convert("RGB")
     return np.array(image)
-
 
 import re
 
@@ -43,12 +26,6 @@ def load_known_faces(known_faces_dir=DEFAULT_KNOWN_FACES_DIR):
 
             if encodings:
                 name = os.path.splitext(filename)[0]
-                # Strip a trailing "_N" (or " N", "-N") index used to distinguish
-                # multiple reference photos of the same person, so all of a
-                # person's photos resolve to one consistent name label instead
-                # of splitting into "NAME" and "NAME_" (see filenames with vs
-                # without a numeric suffix), which broke the recognizer's
-                # same-identity margin bypass.
                 name = re.sub(r"[\s_-]*\d+$", "", name)
                 known_encodings.append(encodings[0])
                 known_names.append(name)
@@ -57,22 +34,9 @@ def load_known_faces(known_faces_dir=DEFAULT_KNOWN_FACES_DIR):
 
     return known_encodings, known_names
 
-
 def locate_faces(frame):
-    """
-    Detects face bounding boxes only, without identity matching. Used to
-    keep the on-screen box tracking a face after identity has already
-    been confirmed and locked, without repeating the more expensive
-    encoding + distance comparison on every frame.
-    """
     return face_recognition.face_locations(frame)
 
-
-# Defaults tightened (tolerance 0.5 -> 0.45, min_margin 0.05 -> 0.1) to reduce
-# false accepts between visually similar registered students: a lower tolerance
-# rejects more distant matches, and a larger required margin between the best
-# and second-best match rejects more ambiguous ones. Tradeoff: with only a few
-# reference photos per student, more legitimate matches may fall to "Unknown".
 def recognize_face(frame, known_encodings, known_names, tolerance=0.45, min_margin=0.1):
     face_locations = face_recognition.face_locations(frame)
     face_encodings = face_recognition.face_encodings(frame, face_locations)
@@ -100,11 +64,7 @@ def recognize_face(frame, known_encodings, known_names, tolerance=0.45, min_marg
 
     return names, face_locations
 
-
 if __name__ == "__main__":
-    # Test block with performance optimizations: downscaled frames and
-    # frame skipping, since running full recognition on every frame at
-    # full resolution is too slow for smooth webcam playback.
     import cv2
 
     known_encodings, known_names = load_known_faces()

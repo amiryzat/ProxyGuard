@@ -1,8 +1,3 @@
-# src/liveness_check.py
-# Handles liveness detection to confirm a real, present person rather than
-# a photo or static image. Combines blink detection (continuous, no prompt
-# needed) with a randomized head movement challenge (active, prompted).
-
 import cv2
 import mediapipe as mp
 import numpy as np
@@ -30,7 +25,6 @@ CONSECUTIVE_FRAMES = 2
 CHALLENGE_DURATION_SECONDS = 10
 CHALLENGE_DIRECTIONS = ["left", "right", "up"]
 
-
 def calculate_ear(landmarks, eye_indices, frame_width, frame_height):
     points = []
     for idx in eye_indices:
@@ -47,7 +41,6 @@ def calculate_ear(landmarks, eye_indices, frame_width, frame_height):
 
     ear = (vertical_1 + vertical_2) / (2.0 * horizontal)
     return ear
-
 
 class BlinkDetector:
     def __init__(self):
@@ -70,7 +63,6 @@ class BlinkDetector:
             self.frame_counter = 0
 
         return avg_ear, blinked_this_frame, self.blink_count
-
 
 def get_head_pose(landmarks, frame_width, frame_height):
     def get_point(idx):
@@ -102,16 +94,7 @@ def get_head_pose(landmarks, frame_width, frame_height):
 
     return direction, horizontal_offset, vertical_offset
 
-
 class HeadMovementChallenge:
-    """
-    Manages a randomized head movement challenge. Call start() to begin a
-    new challenge with a random direction and a time limit. Call check()
-    each frame with the current detected direction to see if the person
-    matched the instruction in time. The challenge either passes, fails,
-    or is still waiting, depending on elapsed time and whether a match
-    was seen.
-    """
 
     def __init__(self, duration_seconds=CHALLENGE_DURATION_SECONDS):
         self.duration_seconds = duration_seconds
@@ -148,7 +131,6 @@ class HeadMovementChallenge:
             return 0
         remaining = self.duration_seconds - (time.time() - self.start_time)
         return max(0, remaining)
-
 
 if __name__ == "__main__":
     cap = cv2.VideoCapture(0)

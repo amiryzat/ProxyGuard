@@ -1,18 +1,8 @@
-# src/pattern_flagger.py
-# Reads logs/attendance.csv (written by attendance_logger.py) and flags
-# suspicious patterns for lecturer review, rather than auto-rejecting
-# anything. Three signals are checked: repeated failures for the same
-# registered identity, duplicate check-in attempts within a session, and
-# clusters of unrecognized-face attempts within a session.
-
 import csv
 import os
 from collections import defaultdict
 from datetime import datetime
 
-# Resolve the log file the same way attendance_logger.py does. Deliberately
-# not imported from there, so this module stays independently importable
-# per the project's module-independence convention.
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_LOG_PATH = os.path.join(SCRIPT_DIR, "..", "logs", "attendance.csv")
 
@@ -23,25 +13,16 @@ UNRECOGNIZED_CLUSTER_WINDOW_MINUTES = 5
 DUPLICATE_REASON = "duplicate check-in this session"
 NOT_RECOGNIZED_REASON = "face not recognized"
 
-
 def _load_rows(log_path=DEFAULT_LOG_PATH):
     if not os.path.exists(log_path):
         return []
     with open(log_path, newline="") as f:
         return list(csv.DictReader(f))
 
-
 def _row_datetime(row):
     return datetime.strptime(f"{row['date']} {row['time']}", "%Y-%m-%d %H:%M:%S")
 
-
 def find_repeated_failures(rows, threshold=REPEATED_FAILURE_THRESHOLD):
-    """
-    Flags any registered (non-"Unknown") name with at least `threshold`
-    failed rows across the whole log, regardless of session -- repeated
-    failure for the same identity is a signal about that person, not
-    something scoped to a single class session.
-    """
     failure_counts = defaultdict(int)
     for row in rows:
         if row["result"] == "failed" and row["name"] != "Unknown":
@@ -49,13 +30,7 @@ def find_repeated_failures(rows, threshold=REPEATED_FAILURE_THRESHOLD):
 
     return {name: count for name, count in failure_counts.items() if count >= threshold}
 
-
 def find_duplicate_attempts(rows):
-    """
-    Groups rows flagged with DUPLICATE_REASON by (name, session_id), so a
-    lecturer can see who tried to check in more than once successfully
-    within the same session.
-    """
     duplicate_counts = defaultdict(int)
     for row in rows:
         if row["reason"] == DUPLICATE_REASON:
@@ -63,16 +38,7 @@ def find_duplicate_attempts(rows):
 
     return dict(duplicate_counts)
 
-
 def find_unrecognized_clusters(rows, threshold=UNRECOGNIZED_CLUSTER_THRESHOLD, window_minutes=UNRECOGNIZED_CLUSTER_WINDOW_MINUTES):
-    """
-    Flags sessions where "face not recognized" attempts cluster together
-    within `window_minutes` of each other at least `threshold` times.
-    These rows are always logged under name "Unknown", so clustering is
-    grouped by session_id instead of by name -- repeated unrecognized
-    attempts in a short window within one session is itself the signal,
-    regardless of who it was.
-    """
     by_session = defaultdict(list)
     for row in rows:
         if row["reason"] == NOT_RECOGNIZED_REASON:
@@ -94,7 +60,6 @@ def find_unrecognized_clusters(rows, threshold=UNRECOGNIZED_CLUSTER_THRESHOLD, w
 
     return dict(clusters)
 
-
 def flag_patterns(log_path=DEFAULT_LOG_PATH):
     rows = _load_rows(log_path)
     return {
@@ -102,7 +67,6 @@ def flag_patterns(log_path=DEFAULT_LOG_PATH):
         "duplicate_attempts": find_duplicate_attempts(rows),
         "unrecognized_clusters": find_unrecognized_clusters(rows),
     }
-
 
 def print_report(report):
     print("Repeated failures (same identity, whole log):")
@@ -127,11 +91,7 @@ def print_report(report):
     else:
         print("  (none)")
 
-
 if __name__ == "__main__":
-    # Manual smoke test: builds a small sample CSV (in the system temp
-    # dir, not the real attendance log) covering two fake session_ids, so
-    # all three flagging checks can be verified without the webcam flow.
     import tempfile
 
     sample_path = os.path.join(tempfile.gettempdir(), "proxyguard_pattern_flagger_sample.csv")
